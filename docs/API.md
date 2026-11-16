@@ -92,6 +92,7 @@ Prefer `at_mark` / `marks(n)` over the legacy `game.seconds` / `game.minutes`.
 | `game.initial_units()` | The multiplayer lobby's Initial Vehicles (0-12). |
 | `game.uses_day_night()` / `game.uses_morale()` | The lobby's Day and Night, and whether morale is free (`false` when Morale Steady is ticked). |
 | `game.beacons([ore])` | Discover the map's mining beacons (a list of `Unit`); optional `"Common"`/`"Rare"`. Rank by distance with `unit.x`/`unit.y`. |
+| `game.tech(id)` | A research topic of the loaded tech tree: `{ id, lab, eden_cost, plymouth_cost, max_scientists, requires }`, or nil for a topic the tree hasn't. `lab` is 1 Basic, 2 Standard, 3 Advanced, 0 none (a free topic); a cost of -1 means not for that colony; `requires` lists the topic ids that must be researched first. |
 | `game.map_sound(name_or_id, at)` | Play a sound at a map location. |
 
 Sound names include the Savant voice lines (`WeAreUnderAttack`, `EnemyUnitSighted`,
@@ -298,6 +299,9 @@ kept in a saved game. `ai:` lines in the AI log name each group made.
 | `unit.object_on_pad` | Spaceport: the rocket on its pad (`"EMPMissile"`, ...), or `"None"`. |
 | `unit.occupied_bay` | Garage, Structure Factory, Spaceport: a bay holds something. |
 | `unit.is_discovered` | Wreckage: the player has found it. |
+| `unit.research_topic` | The tech id a lab is researching; nil when it isn't researching. |
+| `unit.producing` / `unit.progress` | The type a factory is making (a vehicle, or a kit at the Structure Factory) and how far along it is, `0..1`; both nil when it makes nothing. |
+| `unit.target` | The unit a vehicle's attack order is aimed at; nil without one (also for an attack on the ground, or once the target is destroyed). |
 
 **Orders & actions (methods)**
 
@@ -325,6 +329,7 @@ kept in a saved game. `ai:` lines in the AI log name each group made.
 | Method | For |
 |---|---|
 | `unit:survey(beacon)` | RoboSurveyor: mark a mining beacon surveyed (so a miner can deploy). |
+| `beacon:surveyed_by(player)` | Whether a mining beacon counts as surveyed for `player` (a `Player` or a 1-based number): the player or an ally surveyed it, or the player has an EDWARD Satellite. False for any other unit. |
 | `unit:deploy(beacon\|loc)` | RoboMiner / GeoCon: deploy into a building (a mine on a beacon). |
 | `unit:build(loc)` | ConVec: build the structure kit it's carrying at `loc`. |
 | `unit:dock(structure)` / `unit:dock_at_garage(garage)` | Dock a vehicle (e.g. ConVec at a factory to load a kit). |
@@ -393,6 +398,9 @@ Post kit's weapon).
 | `player.ore` / `player.rare_ore` / `player.food` | Stored resources (get or set). |
 | `player.kids` / `player.workers` / `player.scientists` | Population by type (get or set). |
 | `player.population` | Total colonists (read-only). |
+| `player.power` | Spare power (read-only): what the colony generates less what its working structures use, as the game's last update left it. |
+| `player.food_net` | The food stored's change over the colony's last food update (read-only; the game updates food every 256 ticks). Negative: the colony eats more than it grows. |
+| `player:cost(type [, weapon])` | What `type` costs this player's colony, `{ common =, rare = }` (ore), with a turret `weapon`'s cost added for a vehicle or Guard Post; nil for an unknown type. Research that changes a cost is included. |
 | `player.difficulty` | The Colony Games menu difficulty as `"Easy"`/`"Normal"`/`"Hard"` (read-only). Read it off the human player to self-tune a mission per difficulty. |
 | `player:satellite_count(type)` | How many of a satellite or launched Spaceport cargo rocket the player has - e.g. `"EDWARDSatellite"`, `"RareMetalsCargo"`, `"CommonMetalsCargo"`, `"FoodCargo"`, `"EvacuationModule"`. Drives Starship-colony evacuation victories. |
 
@@ -409,12 +417,48 @@ if diff == "Hard" then players[2].ore = 6000 end
 | Method | |
 |---|---|
 | `player:has_tech(techId)` | Has this technology been researched? |
+| `player:can_research(techId)` | Can a lab start this topic now? Not researched yet, available to the player's colony, every prerequisite researched and within the mission's tech level (what a lab's topic list offers). False for a topic the tree hasn't. |
 | `player:mark_research(techId)` | Grant a tech (and free follow-ons). |
 | `player:set_tech_level(n)` | Grant all techs up to level `n`. |
 | `player:is_ally(other)` / `player:ally_with(other)` / `player:mutually_ally_with(other)` | Check / set alliances (`other` = `Player` or 1-based number). |
 | `player:go_eden()` / `player:go_plymouth()` | Set faction at runtime. |
 | `player:go_human()` / `player:go_ai()` | Set control at runtime. |
 | `player:center_view(loc)` | Center the camera (only affects the local player). |
+
+**Reading the colony (computer players).** Everything above is read-only and reads the game's own state, so
+a script that plays a colony decides from what a player would see in the panes, and every machine of a
+multiplayer game reads the same:
+
+```lua
+local me = players[2]
+local function affordable(type, weapon)
+  local c = me:cost(type, weapon)
+  return c ~= nil and me.ore >= c.common and me.rare_ore >= c.rare
+end
+
+for _, f in ipairs(me:units("VehicleFactory")) do
+  if f.enabled and f.producing == nil and affordable("Lynx", "Laser") then f:produce("Lynx", "Laser") end
+end
+if me.power < 60 then log.ai("power is short: " .. me.power) end
+
+-- The next topic toward a goal, at a lab of the right type.
+local function next_topic(goal)
+  if me:has_tech(goal) then return nil end
+  if me:can_research(goal) then return goal end
+  for _, id in ipairs(game.tech(goal).requires) do
+    local t = next_topic(id)
+    if t then return t end
+  end
+end
+local LABS = { "BasicLab", "StandardLab", "AdvancedLab" }
+local topic = next_topic(3851)   -- multitek.txt's Lynx topic
+local info = topic and game.tech(topic)
+if info and LABS[info.lab] then
+  for _, lab in ipairs(me:units(LABS[info.lab])) do
+    if lab.research_topic == nil then lab:research(topic, math.min(info.max_scientists, me.scientists)); break end
+  end
+end
+```
 
 ## Region
 
