@@ -682,6 +682,124 @@ void ReportBadTech(const char* fn, int techId) {
                    kDefaultMsgSound, Tethys::AllPlayers);
 }
 
+// ---- read-only queries for computer-player scripts (costs, balances, research, survey, what was ordered) ----
+// Each reads the game's own state and changes nothing, so they are safe in a multiplayer game: every machine reads
+// the same values.
+
+bool ValidPlayerNum(int num) { return (num >= 0) && (num < static_cast<int>(Tethys::MaxPlayers)); }
+
+// player:cost(type [, weapon]) -> { common=, rare= }: what `type` costs this player's colony (the type's stats for
+// the player, as research left them), plus a turret weapon's for a vehicle or Guard Post; nil for an unknown type.
+sol::object Player_Cost(int num, const std::string& typeName, sol::object weaponArg, sol::this_state ts) {
+  sol::state_view L(ts);
+  const MapID type = MapIdFromName(typeName);
+  Tethys::MapObjectType*const mot = (type != MapID::None) ? Tethys::MapObjectType::GetInstance(static_cast<int>(type)) : nullptr;
+  if ((mot == nullptr) || !ValidPlayerNum(num)) return sol::make_object(L, sol::lua_nil);
+  int common = mot->playerStats_[num].commonCost, rare = mot->playerStats_[num].rareCost;
+  const MapID weapon = weaponArg.is<std::string>() ? MapIdFromName(weaponArg.as<std::string>()) : MapID::None;
+  Tethys::MapObjectType*const w = (weapon != MapID::None) ? Tethys::MapObjectType::GetInstance(static_cast<int>(weapon)) : nullptr;
+  if (w != nullptr) {
+    common += w->playerStats_[num].commonCost;
+    rare   += w->playerStats_[num].rareCost;
+  }
+  sol::table out = L.create_table();
+  out["common"] = common;
+  out["rare"]   = rare;
+  return out;
+}
+
+// game.tech(id) -> { id, lab, eden_cost, plymouth_cost, max_scientists, requires = { ids } } from the loaded tech
+// tree, or nil for a topic the tree hasn't. lab: 1 Basic, 2 Standard, 3 Advanced, 0 none (a free topic). A cost of
+// -1: not available to that colony. `requires` lists the tree file's REQUIRES: the loader makes the tree's root (topic
+// 0, which every player has) the prerequisite of a topic without any, and that is left out.
+sol::object Game_Tech(int techId, sol::this_state ts) {
+  sol::state_view L(ts);
+  Tethys::Research*const r = Tethys::Research::GetInstance();
+  Tethys::TechInfo*const t = (r != nullptr) ? r->GetTechInfo(techId) : nullptr;
+  if (t == nullptr) return sol::make_object(L, sol::lua_nil);
+  sol::table out = L.create_table();
+  out["id"]             = t->techID;
+  out["lab"]            = static_cast<int>(t->lab);
+  out["eden_cost"]      = t->edenCost;
+  out["plymouth_cost"]  = t->plymouthCost;
+  out["max_scientists"] = t->maxScientists;
+  sol::table requires = L.create_table();
+  int n = 0;
+  for (int i = 0; i < t->numRequiredTechs; ++i) {
+    const int num = t->pRequiredTechNum[i];
+    if ((num >= 0) && (num < r->numTechs_) && (r->ppTechInfos_[num]->techID != 0)) requires[++n] = r->ppTechInfos_[num]->techID;
+  }
+  out["requires"] = requires;
+  return out;
+}
+
+// player:can_research(id) - whether the player may start the topic now (Research::CanResearchTech 0x4733C0, what a
+// lab's topic list offers): not researched yet, available to its colony, every prerequisite researched, within the
+// mission's tech level. False for a topic the tree hasn't.
+bool Player_CanResearch(int num, int techId) {
+  Tethys::Research*const r = Tethys::Research::GetInstance();
+  if ((r == nullptr) || !ValidPlayerNum(num)) return false;
+  const int techNum = r->GetTechNum(techId);
+  return (techNum != -1) && (r->CanResearchTech(num, techNum) != 0);
+}
+
+// beacon:surveyed_by(player) - whether a mining beacon counts as surveyed for the player (MiningBeacon::IsSurveyed
+// 0x4055F0: the player or an ally surveyed it, or the player has an EDWARD Satellite up). False for anything else.
+bool Unit_SurveyedBy(Unit& u, sol::object player) {
+  const int num = PlayerNumFrom(player);
+  if (!ValidPlayerNum(num) || (u.GetType() != MapID::MiningBeacon)) return false;
+  auto*const mo = u.GetMapObject<Tethys::MapObj::MiningBeacon>();
+  return (mo != nullptr) && (mo->IsSurveyed(num) != 0);
+}
+
+// A dword of a unit's map object at `offset`, for fields Tethys leaves unnamed.
+int MapObjField(const Unit& u, size_t offset) {
+  const auto*const mo = u.GetMapObject();
+  return (mo != nullptr) ? *reinterpret_cast<const int*>(reinterpret_cast<const uint8_t*>(mo) + offset) : 0;
+}
+
+// lab.research_topic -> the tech id a lab is researching, nil when it isn't. While its command is Research, the lab
+// keeps the topic's index in the tree at +0x60.
+sol::object Unit_ResearchTopic(const Unit& u, sol::this_state ts) {
+  sol::state_view L(ts);
+  Tethys::Research*const r = Tethys::Research::GetInstance();
+  if (!u.IsBuilding() || (u.GetCommand() != Tethys::CommandType::Research) || (r == nullptr))
+    return sol::make_object(L, sol::lua_nil);
+  const int num = MapObjField(u, 0x60);
+  if ((num < 0) || (num >= r->numTechs_)) return sol::make_object(L, sol::lua_nil);
+  return sol::make_object(L, r->ppTechInfos_[num]->techID);
+}
+
+// factory.producing -> the type name a factory is making (a vehicle, or a kit at the Structure Factory), nil when it
+// makes nothing; factory.progress -> how far along, 0..1 (nil likewise). The product's MapID is at +0x60, its build
+// time at +0x68, and the time left in the action timer while the factory works (action OperationalWait).
+sol::object Unit_Producing(const Unit& u, sol::this_state ts) {
+  sol::state_view L(ts);
+  if (!u.IsFactory() || (u.GetCommand() != Tethys::CommandType::Produce)) return sol::make_object(L, sol::lua_nil);
+  const MapID t = static_cast<MapID>(u.GetMapObject<Tethys::FactoryBuilding>()->itemToProduce_);
+  if (t == MapID::None) return sol::make_object(L, sol::lua_nil);
+  return sol::make_object(L, NameFromMapId(t));
+}
+sol::object Unit_Progress(const Unit& u, sol::this_state ts) {
+  sol::state_view L(ts);
+  if (!u.IsFactory() || (u.GetCommand() != Tethys::CommandType::Produce)) return sol::make_object(L, sol::lua_nil);
+  const int total = MapObjField(u, 0x68);
+  if ((u.GetAction() != Tethys::ActionType::OperationalWait) || (total <= 0)) return sol::make_object(L, 0.0);
+  const int left = std::clamp(u.GetMapObject()->actionTimer_, 0, total);
+  return sol::make_object(L, double(total - left) / total);
+}
+
+// unit.target -> the unit a vehicle's Attack order is aimed at, nil otherwise (no Attack order, a ground target, or
+// the target gone). The order's target is at +0x48: an object index with the top bit set, else a tile (0x423AB0).
+sol::object Unit_Target(const Unit& u, sol::this_state ts) {
+  sol::state_view L(ts);
+  if (!u.IsVehicle() || (u.GetCommand() != Tethys::CommandType::Attack)) return sol::make_object(L, sol::lua_nil);
+  const uint32_t t = static_cast<uint32_t>(MapObjField(u, 0x48));
+  if ((t & 0x80000000u) == 0) return sol::make_object(L, sol::lua_nil);
+  const Unit target(static_cast<int>(t & 0xFFFFu));
+  return target.IsLive() ? sol::make_object(L, target) : sol::make_object(L, sol::lua_nil);
+}
+
 }  // namespace
 
 // Issue ONE queued order's game command, shielded with SEH. Commanding a unit OP2 hasn't finished
@@ -1026,6 +1144,7 @@ void RegisterBindings(sol::state& lua) {
   game.set_function("cell",        &Game_Cell);        // read a tile's terrain (passable/cliff/lava/...)
   game.set_function("can_place",   &Game_CanPlace);    // engine check: can a structure tile go here?
   game.set_function("map_size",    &Game_MapSize);     // playable map dimensions
+  game.set_function("tech",        &Game_Tech);        // a research topic from the loaded tech tree
 
   // ---- runtime map features (set-pieces created during the mission, not just at placement) ----
   game.set_function("create_wall", [](const std::string& type, sol::object area) {
@@ -1303,6 +1422,13 @@ void RegisterBindings(sol::state& lua) {
                return mo ? (static_cast<int>(mo->GetOreType()) == 1 ? "Rare" : "Common") : ""; }),
       // factory_cargo(bay): the kit type name in a 1-based factory bay ("None" if empty) - "what's in my SF".
       "factory_cargo", [](const Unit& u, int bay) { return NameFromMapId(u.GetFactoryCargo(bay - 1).unitType); },
+      "surveyed_by",   &Unit_SurveyedBy,
+
+      // ---- what was ordered, read back (nil when the unit isn't doing it) ----
+      "research_topic", sol::property(&Unit_ResearchTopic),
+      "producing",      sol::property(&Unit_Producing),
+      "progress",       sol::property(&Unit_Progress),
+      "target",         sol::property(&Unit_Target),
 
       // ---- health ----
       // hp / max_hp (hit points), health (0..1 fraction). damage(n) inflicts n; heal(n) repairs n.
@@ -1388,6 +1514,11 @@ void RegisterBindings(sol::state& lua) {
       "scientists", sol::property([](const LuaPlayer& p) { return _Player(p.num).GetScientists(); },
                                   [](LuaPlayer& p, int v) { _Player(p.num).SetScientists(v); }),
       "population", sol::property([](const LuaPlayer& p) { return _Player(p.num).GetPopulation(); }),
+      // The colony's balances as its last update left them (read-only): spare power (generated less what its
+      // working structures use), and the food stored's change over the last food update.
+      "power",      sol::property([](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? i->amountPowerAvailable_ : 0; }),
+      "food_net",   sol::property([](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? i->netFoodProduction_ : 0; }),
+      "cost",       [](const LuaPlayer& p, const std::string& t, sol::object w, sol::this_state ts) { return Player_Cost(p.num, t, w, ts); },
       // The difficulty level chosen in the Colony Games menu, as "Easy"/"Normal"/"Hard". Lets a mission
       // tweak its settings per difficulty (e.g. AI resources, disaster timing).
       "difficulty", sol::property([](const LuaPlayer& p) -> std::string {
@@ -1413,6 +1544,7 @@ void RegisterBindings(sol::state& lua) {
                            if (!IsValidTechId(techId)) { ReportBadTech("mark_research", techId); return; }
                            _Player(p.num).MarkResearchComplete(techId); },
       "set_tech_level",  [](LuaPlayer& p, int level)  { _Player(p.num).SetTechLevel(level); },
+      "can_research",    [](const LuaPlayer& p, int techId) { return Player_CanResearch(p.num, techId); },
 
       // ---- alliances ----
       "is_ally",            [](const LuaPlayer& p, sol::object o) { const int n = PlayerNumFrom(o);
