@@ -615,6 +615,9 @@ sol::object Game_FindBuildSite(const std::string& typeName, sol::object from, so
         // together; OP2 requires that border clear. includeBorder=true gives the total rect.
         const MapRect area = mot->GetTileRect(center, true);
         if ((area.x1 < minX) || (area.x2 > maxX) || (area.y1 < minY) || (area.y2 > maxY)) continue;  // off-map
+        // GetTileRect clips to the map, so a site running off an edge comes back smaller; skip it.
+        if (((area.x2 - area.x1 + 1) != mot->stats_.building.width + 2) ||
+            ((area.y2 - area.y1 + 1) != mot->stats_.building.height + 2)) continue;
         bool ok = true;
         for (int ty = area.y1; ok && (ty <= area.y2); ++ty)
           for (int tx = area.x1; tx <= area.x2; ++tx)
@@ -639,12 +642,12 @@ sol::object Game_Footprint(const std::string& typeName, sol::this_state ts) {
   sol::state_view L(ts);
   Tethys::MapObjectType*const mot = Tethys::MapObjectType::GetInstance(static_cast<int>(MapIdFromName(typeName)));
   if (mot == nullptr) return sol::make_object(L, sol::lua_nil);
-  const Location c(100, 100);                         // any in-bounds center; we only want the size
-  const MapRect core = mot->GetTileRect(c, false);
-  const MapRect tot  = mot->GetTileRect(c, true);
+  // Read the size from the type's stats: a rect round a sample tile is clipped to the map, so on a small map
+  // (e.g. 64x64, where a tile like (100, 100) is off the map) it would answer 1x1.
+  const int w = mot->stats_.building.width, h = mot->stats_.building.height;
   sol::table out = L.create_table();
-  out["w"]  = core.x2 - core.x1 + 1;  out["h"]  = core.y2 - core.y1 + 1;
-  out["tw"] = tot.x2  - tot.x1  + 1;  out["th"] = tot.y2  - tot.y1  + 1;
+  out["w"]  = w;      out["h"]  = h;
+  out["tw"] = w + 2;  out["th"] = h + 2;              // plus the 1-tile build-clearance border
   return out;
 }
 
