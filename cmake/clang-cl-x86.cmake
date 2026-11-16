@@ -1,0 +1,30 @@
+# Cross-build OP2Lua for 32-bit Windows from Linux with clang-cl and lld-link (MSVC ABI, so Tethys's layouts hold).
+#   xwin --accept-license --arch x86 splat --output ~/.xwin      # MSVC CRT + Windows SDK (cargo install xwin)
+#   cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/clang-cl-x86.cmake -DXWIN_DIR=$HOME/.xwin -DCMAKE_BUILD_TYPE=Release
+#   cmake --build build
+# LLVM_BIN picks the llvm-lib/llvm-rc/llvm-mt directory if they aren't on PATH (e.g. /usr/lib/llvm-21/bin).
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR x86)
+set(XWIN_DIR "$ENV{HOME}/.xwin" CACHE PATH "xwin splat output (crt/ and sdk/)")
+set(LLVM_BIN "" CACHE PATH "Directory of llvm-lib, llvm-rc and llvm-mt, if not on PATH")
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES XWIN_DIR LLVM_BIN)
+set(_bin "")
+if(LLVM_BIN)
+  set(_bin "${LLVM_BIN}/")
+endif()
+set(CMAKE_C_COMPILER clang-cl)
+set(CMAKE_CXX_COMPILER clang-cl)
+set(CMAKE_LINKER lld-link)
+set(CMAKE_AR "${_bin}llvm-lib")
+set(CMAKE_RC_COMPILER "${_bin}llvm-rc")
+set(CMAKE_MT "${_bin}llvm-mt")
+set(_inc "/imsvc ${XWIN_DIR}/crt/include /imsvc ${XWIN_DIR}/sdk/include/ucrt /imsvc ${XWIN_DIR}/sdk/include/um /imsvc ${XWIN_DIR}/sdk/include/shared")
+set(CMAKE_C_FLAGS_INIT "--target=i686-pc-windows-msvc -fuse-ld=lld-link ${_inc}")
+set(CMAKE_CXX_FLAGS_INIT "--target=i686-pc-windows-msvc -fuse-ld=lld-link ${_inc} /EHsc")
+set(CMAKE_RC_FLAGS_INIT "-I ${XWIN_DIR}/sdk/include/um -I ${XWIN_DIR}/sdk/include/shared")
+set(_lib "/libpath:${XWIN_DIR}/crt/lib/x86 /libpath:${XWIN_DIR}/sdk/lib/um/x86 /libpath:${XWIN_DIR}/sdk/lib/ucrt/x86")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "${_lib}")
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "${_lib}")
+set(CMAKE_MODULE_LINKER_FLAGS_INIT "${_lib}")
+# The compiler checks build a static library: xwin ships no debug CRT for a test executable to link.
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)

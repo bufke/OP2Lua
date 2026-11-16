@@ -94,7 +94,7 @@ Trigger CreateSetTrigger(
   Ts... triggers)
 {
   return OP2Thunk<0x4794E0, Trigger CDECL(ibool, ibool, int, int, const char*, ...)>(
-    enabled, oneShot, sizeof...(Ts), needed, triggerFunction.data(), triggers...);
+    enabled, oneShot, sizeof...(Ts), needed, triggerFunction.data(), triggers.GetID()...);
 }
 
 
