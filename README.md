@@ -57,7 +57,8 @@ any other mission DLL. It works this cleanly *because* we chose Lua: a `lua_Stat
 destroyed per mission, so the runtime needn't be resident the way an embedded Python interpreter
 would force.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design and [`docs/API.md`](docs/API.md)
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design, [`docs/FILE-FORMAT.md`](docs/FILE-FORMAT.md)
+for the mission files and [`docs/API.md`](docs/API.md)
 for the mission scripting API.
 
 ---
@@ -81,7 +82,7 @@ OP2Lua/
     LuaMission.cpp            - the per-mission stub (template; DescBlock byte-patched per mission)
   op2lua-newmission/          - cross-platform C++ console tool that scaffolds a new mission
                                 (clone+patch the stub + skeleton scripts); compiled exe ships in the SDK
-  docs/                       - API.md, ARCHITECTURE.md, DEPLOY.md, CHANGES.md, ROADMAP.md (all docs except README)
+  docs/                       - API.md, FILE-FORMAT.md, ARCHITECTURE.md, DEPLOY.md, CHANGES.md, ROADMAP.md (all docs except README)
   dist/                       - packaged demo pack (core + stub DLLs + scripts + README, zipped)
   third_party/                - Tethys (vendored), Lua 5.4.7, sol2  (see third_party/README.md)
 ```

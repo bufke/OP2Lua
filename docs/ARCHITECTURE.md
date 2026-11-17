@@ -142,9 +142,10 @@ Every log line is tagged `kCore` or `kMission` and tee'd to up to two files:
 Errors are `kCore`, so they appear in both - a failure is recorded centrally and shown to the
 author. The split keeps a newbie's debug `print()` in their own log without polluting the shared one.
 
-## `placement.lua` schema (draft)
+## `placement.lua` schema
 
-The converter emits a single `return { ... }` table. Draft shape (see `op2luasdk/samples/hold-the-line`):
+The full reference is [FILE-FORMAT.md](FILE-FORMAT.md). The converter emits a single `return { ... }` table, shaped
+like this (see `op2luasdk/samples/hold-the-line`):
 
 ```lua
 return {
