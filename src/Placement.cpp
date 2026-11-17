@@ -263,7 +263,8 @@ void RegisterAllPlayers(sol::table& luaPlayers) {
 
 void ApplyBeacons(sol::table& luaUnits, int fromAfter, int toAfter);
 
-// Each unit in order; after the n-th, the beacons with `after = n`.
+// Each unit in order; after the n-th, the beacons with `after = n`, and after the last, those with a larger
+// `after`. An entry with an unknown type still counts.
 void ApplyUnits(sol::table& luaUnits) {
   sol::optional<sol::table> units = gPlacement["units"];
   int made = 0;
@@ -324,9 +325,9 @@ void ApplyUnits(sol::table& luaUnits) {
   ApplyBeacons(luaUnits, std::max(made, 1), INT_MAX);
 }
 
-// The beacons whose `after` (how many of the placement's units are made before it; 0 when left out) is in
-// fromAfter..toAfter. A setup that makes a beacon between its units (Tutorial 3, between its Tokamak and the mine on
-// it) gets the same object ids so.
+// The beacons whose `after` (how many of placement's unit entries come before it; 0 when left out) is in
+// fromAfter..toAfter. Making a beacon between the units, as a setup does (Tutorial 3, between its Tokamak and the
+// mine on it), gives every unit the object id it has in the original.
 void ApplyBeacons(sol::table& luaUnits, int fromAfter, int toAfter) {
   sol::optional<sol::table> beacons = gPlacement["beacons"];
   if (!beacons) return;
@@ -441,8 +442,8 @@ void Apply() {
 
   ApplyPlayers(L, luaPlayers);
   RegisterAllPlayers(luaPlayers);
-  ApplyBeacons(luaUnits, 0, 0);   // beacons are terrain - create them BEFORE units, so a mine building
-  ApplyUnits(luaUnits);           // placed on a beacon finds it (else CreateUnit faults on the missing beacon)
+  ApplyBeacons(luaUnits, 0, 0);   // beacons are terrain - those without `after` come BEFORE units, so a mine
+  ApplyUnits(luaUnits);           // placed on one finds it (else CreateUnit faults on the missing beacon)
   ApplyWalls();
   ApplyRegions(L, luaRegions);
   ApplyMarkers(L, luaMarkers);

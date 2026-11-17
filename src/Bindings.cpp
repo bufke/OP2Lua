@@ -1,13 +1,14 @@
 // Bindings.cpp - the author-facing OP2Lua API, bound to the Tethys game API via sol2.
 //
-// game.*     message(text[,sound]), sound(name|id[,to]), rand, tick, create_unit, minutes/seconds
+// game.*     messages and sounds, rand, tick, create_unit, map queries, map features, disasters, environment
 // mission.*  win, lose, last_one_standing, victory, failure
-// trigger.*  count, resource, set, midas, one_player_left, operational, vehicle_count, building_count
-// Unit       id/type/type_id/alive/owner/valid, move, attack_move, ==
-// Player     is_eden/is_human, owns_any, unit_count
+// trigger.*  the game's triggers (count, resource, set, time, research, the campaign's escape/kit/point/...)
+// Unit       state, orders, read-back of what was ordered, health, ownership
+// Player     colony, resources, research, the game's own checks, alliances, faction/control
 // Region     :units(player?), :contains(unit), :center()
 // ChatArgs   text (get/set), player
 // ai.*       building_group / fight_group / mining_group, unit_block; Group (the game's AI groups)
+// docs/API.md has the full list.
 //
 // Determinism (multiplayer): the only randomness exposed is game.rand -> the engine's SYNCED RNG.
 // State-changing calls go through Tethys (synced commands); no wall-clock, no math.random/os/io.
@@ -99,8 +100,8 @@ Tethys::SoundID ResolveSound(const sol::object& s, Tethys::SoundID dflt) {
   return dflt;
 }
 
-// Convert a Lua value to an internal Location. A Unit's and a Region's coords are already internal;
-// a raw {x=,y=}/{x,y} table is author-facing (editor/status-bar) coords -> translate via GameMap::At.
+// Convert a Lua value to an internal Location. A Unit's location and a Region's centre are already internal;
+// a {x=,y=}/{x,y} table is author-facing (editor/status-bar) coords, translated below.
 Location LocFrom(const sol::object& o) {
   if (o.is<Unit>())   return o.as<Unit>().GetLocation();
   if (o.is<Region>()) { const Region& r = o.as<Region>(); return Location((r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2); }
@@ -110,8 +111,9 @@ Location LocFrom(const sol::object& o) {
     // { x =, y =, raw = true }: the game's own tile, unconverted, as a stock mission passes one off the map (CPS2's
     // truck at x 1262, which the game puts at the east edge; GameMap::At would wrap it).
     if (x && y && t.get_or("raw", false)) return Location(*x, *y);
-    // Translated without GameMap::At's wrap: a tile off the map stays off it, as a stock mission passes one (Plymouth
-    // 3's storms end at the row below the map, which At would put at the top).
+    // 1-based author coords to the padded internal grid, without GameMap::At's wrap: a tile off the map stays off
+    // it, as a stock mission passes one (Plymouth 3's storms end at the row below the map, which At would put at
+    // the top).
     const int px = x ? *x : t.get_or(1, 0), py = y ? *y : t.get_or(2, 0);
     return Location(px - 1 + GameMap::GetPaddingWidth(), py - 1);
   }
@@ -119,7 +121,8 @@ Location LocFrom(const sol::object& o) {
 }
 
 // A MapRect (internal coords) from a Region, a Unit's footprint, a {x1,y1,x2,y2} rect, or a {x,y}
-// single tile (author coords -> GameMap::At). Used by area orders (build_wall / doze / salvage).
+// single tile (author coords -> GameMap::At, which wraps). Used by area orders (build_wall / doze / salvage) and
+// the rectangle queries (units_in_rect, rand_point, find_emp_missile_target).
 MapRect RectFrom(const sol::object& o) {
   if (o.is<Region>()) { const Region& r = o.as<Region>(); return MapRect(r.x1, r.y1, r.x2, r.y2); }
   if (o.is<Unit>())   { return o.as<Unit>().GetRect(); }
@@ -154,8 +157,8 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
                      toPlayer.value_or(Tethys::AllPlayers));
 }
 
-// synced RNG, [0, n). The game's GetRand (0x46F060) draws even for 0 (returning 0), and stock missions call it so
-// (Eden 7's RepeatWaves): a range of 0 draws as there.
+// game.rand(n) - the synced RNG, [0, n). n = 0 still draws (and gives 0), as the game's GetRand (0x46F060) does
+// and a stock mission relies on (Eden 7's RepeatWaves); a negative n gives 0 without drawing.
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
@@ -325,6 +328,7 @@ CompareMode CompareFrom(const sol::table& o, const char* dflt) {
 const char* TriggerFnName(const sol::table& o) {
   return o.get<sol::object>("on").is<sol::protected_function>() ? "OnTrigger" : "OP2LuaTrigger";
 }
+// Keeps a new trigger's `on` function for FireTrigger (by trigger id) and warns when the game made no trigger.
 Trigger Remember(Trigger t, const sol::table& o, const char* what) {
   sol::object fn = o.get<sol::object>("on");
   if (fn.is<sol::protected_function>() && t.IsValid()) gTriggerFns[t.GetID()] = fn.as<sol::protected_function>();
@@ -342,7 +346,8 @@ bool Enabled(const sol::table& o)            { return o.get_or("enabled", true);
 // player) has; `cargo` narrows it (a ConVec's kit, a weapon; any if left out). Space Race: type="IonDriveModule".
 Trigger Trigger_Count(sol::table o) {
   const MapID type = MapIdFromName(o.get_or("type", std::string()));
-  // `cargo` may be a number, as a stock mission passes it (Eden 1's trucks of cargo 1 and 4: their truck cargo).
+  // `cargo` may be a number, passed to the game as it is: a stock mission's raw value (Eden 1 counts Cargo Trucks
+  // carrying truck cargo 1, food, and 4, Common Metal).
   const sol::object cargoArg = o.get<sol::object>("cargo");
   const std::string cargo = cargoArg.is<std::string>() ? cargoArg.as<std::string>() : std::string();
   const MapID cw = cargoArg.is<int>() ? MapID(cargoArg.as<int>())
@@ -352,7 +357,7 @@ Trigger Trigger_Count(sol::table o) {
                   o, "count");
 }
 // trigger.resource{ resource=, compare=">=", amount=, player= } - resource: "Food" / "CommonOre" / "RareOre" /
-// "Kids" / "Workers" / "Scientists" / "Colonists".
+// "Kids" / "Workers" / "Scientists" / "Colonists" / "Ore".
 Trigger Trigger_Resource(sol::table o) {
   static const std::map<std::string, TriggerResource> names = {
       {"Food", TriggerResource::Food}, {"CommonOre", TriggerResource::CommonOre}, {"RareOre", TriggerResource::RareOre},
@@ -443,16 +448,16 @@ Trigger Trigger_Operational(sol::table o) {
                                                               TriggerFnName(o), OneShot(o, true), Enabled(o)),
                   o, "operational");
 }
-// trigger.vehicle_count{ compare=, count=, player= } / trigger.building_count{...} - all of a player's vehicles
-// (or structures).
+// trigger.vehicle_count{ compare=, count=, player= } - all of a player's vehicles, every type.
 Trigger Trigger_VehicleCount(sol::table o) {
   return Remember(Tethys::TethysAPI::CreateVehicleCountTrigger(CompareFrom(o, ">="), o.get_or("count", 1),
                                                                TriggerFnName(o), PlayerOpt(o), OneShot(o, false), Enabled(o)),
                   o, "vehicle_count");
 }
-// The campaign's triggers, made by the game's own factories with the arguments a stock mission passes (Tethys's
-// wrappers take a MapRect and pass its width through the game's MapRect::Width, or x1 and x2 for a rect trigger's x
-// and y). `at` is a tile as anywhere else; a stock mission's own tile is { x =, y =, raw = true }.
+// The campaign's triggers, made by calling the game's own factories at their addresses with the arguments a stock
+// mission passes, not through Tethys's wrappers (those take a MapRect and pass its width through the game's
+// MapRect::Width, or x1 and x2 for a rect trigger's x and y). `at` is a tile as anywhere else; a stock mission's
+// own tile is { x =, y =, raw = true }.
 //
 // trigger.escape{ at=, width=, height=, type=, count=1, cargo=-1, amount=-1, player= } - at least `count` units of a
 // type (with truck cargo and amount) in the rectangle: the campaign's evacuations (Eden 1's trucks of food at 50,45).
@@ -478,8 +483,8 @@ Trigger Trigger_Evac(sol::table o) {
   using Fn = Trigger FASTCALL(Tethys::ibool, Tethys::ibool, int, const char*);
   return Remember(Tethys::OP2Thunk<0x479260, Fn>(Enabled(o), OneShot(o, false), PlayerOpt(o), TriggerFnName(o)), o, "evac");
 }
-// trigger.special_target{ target=unit, type=, one_shot=true } - a unit of `type` next to `target` (the campaign's lab
-// visits by a Scout; CreateSpecialTarget, 0x4797A0).
+// trigger.special_target{ target=unit, type="Scout", one_shot=true } - a unit of `type` next to `target` (the
+// campaign's lab visits by a Scout; CreateSpecialTarget, 0x4797A0). It takes no `player`.
 Trigger Trigger_SpecialTarget(sol::table o) {
   const sol::object t = o.get<sol::object>("target");
   if (!t.is<Unit>()) {
@@ -505,6 +510,7 @@ Trigger Trigger_Rect(sol::table o) {
                                                  o.get_or("width", 1), o.get_or("height", 1), TriggerFnName(o)),
                   o, "rect");
 }
+// trigger.building_count{ compare=, count=, player= } - all of a player's structures, every type.
 Trigger Trigger_BuildingCount(sol::table o) {
   return Remember(Tethys::TethysAPI::CreateBuildingCountTrigger(CompareFrom(o, ">="), o.get_or("count", 1),
                                                                 TriggerFnName(o), PlayerOpt(o), OneShot(o, false), Enabled(o)),
@@ -574,8 +580,8 @@ sol::table Region_Units(const Region& r, sol::object playerArg, sol::this_state 
   }
   return out;
 }
-// game.units_in_range(at, range) -> the units the game's InRangeEnumerator finds within `range` tiles of `at`
-// (CPP1's Rand_Meteor rolls again while one of them is a player 1 building).
+// game.units_in_range(at, range) -> the units of every player the game's InRangeEnumerator finds within `range`
+// tiles of `at`, in its order (CPP1's Rand_Meteor rolls again while one of them is a player 1 building).
 sol::table Game_UnitsInRange(sol::object at, int range, sol::this_state ts) {
   sol::state_view L(ts);
   sol::table out = L.create_table();
@@ -597,7 +603,8 @@ sol::table Game_UnitsInRect(sol::object rect, sol::this_state ts) {
 // game.find_emp_missile_target(rect, player) -> { x =, y =, raw = true }: the tile the game picks for an EMP missile
 // aimed at `player` in the rectangle (TethysGame::FindEMPMissleTarget, 0x478480, called as the stock missions call it:
 // the result through a pointer in ecx, x1 in edx, then y1, x2, y2 and the player; Tethys's wrapper passes them in
-// another order). The game's own tile: a launch aims at its pixel, x * 32 and y * 32.
+// another order). The result is the game's own tile, unconverted (LocFrom takes it back as is); a launch at it aims
+// at pixel x * 32, y * 32 (unit:launch_at_pixel).
 sol::table Game_FindEmpMissileTarget(sol::object rect, sol::object player, sol::this_state ts) {
   sol::state_view L(ts);
   const MapRect r = RectFrom(rect);
@@ -611,7 +618,7 @@ sol::table Game_FindEmpMissileTarget(sol::object rect, sol::object player, sol::
   return t;
 }
 
-// game.rand_point(rect) -> { x, y }: a tile drawn in the rectangle {x1, y1, x2, y2} by the game's own
+// game.rand_point(rect) -> { x, y } (author coords): a tile drawn in the rectangle {x1, y1, x2, y2} by the game's own
 // MAP_RECT::RandPt (0x475CC0), so the game's random numbers go as a mission's own draws do (CPP1's storms). It writes
 // its result through a pointer passed on the stack (`ret 4`); Tethys's MapRect::RandomPoint thunk reads it back wrong.
 sol::table Game_RandPoint(sol::object rect, sol::this_state ts) {
@@ -705,20 +712,29 @@ sol::table Game_Cell(int x, int y, sol::this_state ts) {
   return out;
 }
 
+// A structure type's MapObjectType by name, or nullptr for an unknown name or a type that isn't a structure (only
+// a structure's stats have a building size; MapIDs CommonOreMine..Tokamak are the structures).
+static Tethys::MapObjectType* StructureType(const std::string& typeName) {
+  const MapID id = MapIdFromName(typeName);
+  if ((id < MapID::CommonOreMine) || (id > MapID::Tokamak)) return nullptr;
+  return Tethys::MapObjectType::GetInstance(static_cast<int>(id));
+}
+
 // game.find_build_site(type, from [, maxRadius]) -> {x=,y=} the DoBuild anchor (bottom-right, author
-// coords) of the nearest spot to `from` where the WHOLE footprint of `type` is buildable, or nil.
-// Rings outward and validates every footprint tile with the engine's CanPlaceStructure - so it skips
-// existing buildings, cliffs, lava, etc. Feed the result straight to unit:build(). This is the proper
-// "place a structure without colliding with what's already on the map".
+// coords) of the nearest spot to `from` where the WHOLE footprint of `type` is buildable, or nil (nil too for a
+// type that isn't a structure).
+// Rings outward and checks every footprint tile with TileBuildable (the tile flags, not the engine's
+// CanPlaceStructure) - so it skips existing buildings, walls, cliffs, lava, etc. Feed the result straight
+// to unit:build(). This is the proper "place a structure without colliding with what's already on the map".
 sol::object Game_FindBuildSite(const std::string& typeName, sol::object from, sol::optional<int> maxRadius,
                                sol::this_state ts) {
   sol::state_view L(ts);
-  Tethys::MapObjectType*const mot = Tethys::MapObjectType::GetInstance(static_cast<int>(MapIdFromName(typeName)));
+  Tethys::MapObjectType*const mot = StructureType(typeName);
   if (mot == nullptr) return sol::make_object(L, sol::lua_nil);
   const Location origin = LocFrom(from);
   const int maxR = maxRadius.value_or(30);
-  // Valid internal-tile bounds. CanPlaceStructure does NOT range-check; off-map coords crash it, and the
-  // base can sit in a corner so the ring runs off the edge - so we must clamp the footprint ourselves.
+  // Valid internal-tile bounds. The tile-flag reads don't range-check (they are safe only on in-bounds
+  // coords), and the base can sit in a corner so the ring runs off the edge - so skip sites past them.
   const int pad  = GameMap::GetPaddingWidth();
   const int minX = pad, maxX = pad + GameMap::GetWidth() - 1;
   const int minY = 0,   maxY = GameMap::GetHeight() - 1;
@@ -733,7 +749,8 @@ sol::object Game_FindBuildSite(const std::string& typeName, sol::object from, so
         // together; OP2 requires that border clear. includeBorder=true gives the total rect.
         const MapRect area = mot->GetTileRect(center, true);
         if ((area.x1 < minX) || (area.x2 > maxX) || (area.y1 < minY) || (area.y2 > maxY)) continue;  // off-map
-        // GetTileRect clips to the map, so a site running off an edge comes back smaller; skip it.
+        // GetTileRect clips to the map, so a site running off an edge comes back smaller and passes the check
+        // above; skip one whose rect isn't the full footprint.
         if (((area.x2 - area.x1 + 1) != mot->stats_.building.width + 2) ||
             ((area.y2 - area.y1 + 1) != mot->stats_.building.height + 2)) continue;
         bool ok = true;
@@ -754,14 +771,15 @@ sol::object Game_FindBuildSite(const std::string& typeName, sol::object from, so
 }
 
 // game.footprint(type) -> { w, h, tw, th }: a structure's core size (w x h tiles) and its total size
-// including the 1-tile build-clearance border (tw x th), or nil. Lets the AI reason about how big each
-// building is (spacing, base layout). E.g. Nursery = 2x2 (4x4 total), Vehicle Factory = 4x3 (6x5 total).
+// including the 1-tile build-clearance border (tw x th), or nil for an unknown type or one that isn't a structure.
+// Lets the AI reason about how big each building is (spacing, base layout). E.g. Nursery = 2x2 (4x4 total), Vehicle
+// Factory = 4x3 (6x5 total).
 sol::object Game_Footprint(const std::string& typeName, sol::this_state ts) {
   sol::state_view L(ts);
-  Tethys::MapObjectType*const mot = Tethys::MapObjectType::GetInstance(static_cast<int>(MapIdFromName(typeName)));
+  Tethys::MapObjectType*const mot = StructureType(typeName);
   if (mot == nullptr) return sol::make_object(L, sol::lua_nil);
-  // Read the size from the type's stats: a rect round a sample tile is clipped to the map, so on a small map
-  // (e.g. 64x64, where a tile like (100, 100) is off the map) it would answer 1x1.
+  // The size comes from the type's stats, not GetTileRect round a sample tile: that rect is clipped to the
+  // map, so on a small map (64x64, where a tile like (100, 100) is off it) it would come back 1x1.
   const int w = mot->stats_.building.width, h = mot->stats_.building.height;
   sol::table out = L.create_table();
   out["w"]  = w;      out["h"]  = h;
@@ -807,10 +825,12 @@ void ReportBadTech(const char* fn, int techId) {
 // Each reads the game's own state and changes nothing, so they are safe in a multiplayer game: every machine reads
 // the same values.
 
+// A 0-based player number in range for the game's per-player arrays.
 bool ValidPlayerNum(int num) { return (num >= 0) && (num < static_cast<int>(Tethys::MaxPlayers)); }
 
 // player:cost(type [, weapon]) -> { common=, rare= }: what `type` costs this player's colony (the type's stats for
-// the player, as research left them), plus a turret weapon's for a vehicle or Guard Post; nil for an unknown type.
+// the player, as research left them), plus a turret weapon's for a vehicle or Guard Post (an unknown or missing
+// weapon adds nothing); nil for an unknown type.
 sol::object Player_Cost(int num, const std::string& typeName, sol::object weaponArg, sol::this_state ts) {
   sol::state_view L(ts);
   const MapID type = MapIdFromName(typeName);
@@ -892,18 +912,24 @@ sol::object Unit_ResearchTopic(const Unit& u, sol::this_state ts) {
 }
 
 // factory.producing -> the type name a factory is making (a vehicle, or a kit at the Structure Factory), nil when it
-// makes nothing; factory.progress -> how far along, 0..1 (nil likewise). The product's MapID is at +0x60, its build
-// time at +0x68, and the time left in the action timer while the factory works (action OperationalWait).
+// makes nothing; factory.progress -> how far along, 0..1: nil when it makes nothing, 0 until the build timer runs. The product's MapID is at +0x60 (itemToProduce_), its build time at +0x68, and the time left in the action
+// timer while the factory works (action OperationalWait).
+// What a factory is making: MapID::None when it isn't a factory, has no Produce command, or makes nothing.
+static MapID FactoryProduct(const Unit& u) {
+  if (!u.IsFactory() || (u.GetCommand() != Tethys::CommandType::Produce)) return MapID::None;
+  const auto* f = u.GetMapObject<Tethys::FactoryBuilding>();
+  return (f == nullptr) ? MapID::None : static_cast<MapID>(f->itemToProduce_);
+}
 sol::object Unit_Producing(const Unit& u, sol::this_state ts) {
   sol::state_view L(ts);
-  if (!u.IsFactory() || (u.GetCommand() != Tethys::CommandType::Produce)) return sol::make_object(L, sol::lua_nil);
-  const MapID t = static_cast<MapID>(u.GetMapObject<Tethys::FactoryBuilding>()->itemToProduce_);
+  const MapID t = FactoryProduct(u);
   if (t == MapID::None) return sol::make_object(L, sol::lua_nil);
   return sol::make_object(L, NameFromMapId(t));
 }
 sol::object Unit_Progress(const Unit& u, sol::this_state ts) {
   sol::state_view L(ts);
-  if (!u.IsFactory() || (u.GetCommand() != Tethys::CommandType::Produce)) return sol::make_object(L, sol::lua_nil);
+  // nil whenever `producing` is: the factory makes nothing.
+  if (FactoryProduct(u) == MapID::None) return sol::make_object(L, sol::lua_nil);
   const int total = MapObjField(u, 0x68);
   if ((u.GetAction() != Tethys::ActionType::OperationalWait) || (total <= 0)) return sol::make_object(L, 0.0);
   const int left = std::clamp(u.GetMapObject()->actionTimer_, 0, total);
@@ -972,8 +998,8 @@ static bool GuardedRemoveWall(Unit u, MapRect a)       { __try { u.DoRemoveWall(
 static bool GuardedDoze(Unit u, MapRect a)             { __try { u.DoDoze(a);           return true; } __except (1) { return false; } }
 static bool GuardedSalvage(Unit u, MapRect a, Unit g)  { __try { u.DoSalvage(a, g);     return true; } __except (1) { return false; } }
 static bool GuardedLaunch(Unit u, Location t)          { __try { u.DoLaunch(t);         return true; } __except (1) { return false; } }
-// Unit::DoInfect (0x476B90) and Unit::HasOccupiedBay (0x476080), Outpost2.exe's exports, called as the stock missions
-// call them (Eden 1 infects its buildings as the volcano comes; a Garage or factory with a full bay fails it).
+// Unit::DoInfect (0x476B90), Outpost2.exe's export, called as the stock missions call it (Eden 1 infects its
+// buildings as the volcano comes).
 static void GameDoInfect(Unit& u) {
   using Fn = void(__thiscall*)(Unit*);
   reinterpret_cast<Fn>(0x476B90)(&u);
@@ -990,14 +1016,17 @@ static void GameSetOppFiredUpon(Unit& u, int on) {
 }
 static bool GameIsDiscovered(const Unit& u) {
   using Fn = int(__thiscall*)(const Unit*);
-  return reinterpret_cast<Fn>(0x476120)(&u) != 0;   // Unit::isDiscovered (a wreck the player has found)
+  return reinterpret_cast<Fn>(0x476120)(&u) != 0;   // Unit::isDiscovered, exported (a wreck the player has found)
 }
+// Unit::HasOccupiedBay (0x476080), Outpost2.exe's export: whether a Garage, Structure Factory or Spaceport has
+// something in a bay.
 static bool GameHasOccupiedBay(const Unit& u) {
   using Fn = int(__thiscall*)(const Unit*);
   return reinterpret_cast<Fn>(0x476080)(&u) != 0;
 }
 // A Spaceport's launch at a pixel, as the stock missions' Unit::DoLaunch(px, py, 0) asks (CES1's StageDone fires at
-// FindEMPMissleTarget's tile times 32); Tethys's DoLaunch takes a tile and aims at its centre.
+// FindEMPMissleTarget's tile times 32); Tethys's DoLaunch takes a tile and aims at its centre. Sent as a Launch
+// command packet through the owner's ProcessCommandPacket.
 static void LaunchAtPixel(Unit u, int px, int py) {
   Tethys::CommandPacket packet = { Tethys::CommandType::Launch, sizeof(Tethys::LaunchCommand) };
   packet.data.launch.unitID       = u.GetID();
@@ -1105,8 +1134,9 @@ MapID WeaponOpt(const sol::object& o) {
   return o.is<std::string>() ? MapIdFromName(o.as<std::string>()) : MapID::None;
 }
 
-// ai.unit_block{ { type=, at=, direction=|rotation=, weapon=, cargo=, amount= }, ... } - `at` in author coords;
-// `rotation` is the game's heading (0-255, East 0, South 64), `direction` a name as create_unit takes.
+// ai.unit_block{ { type=, at=, direction=|rotation=, weapon=, cargo=, amount=, classification= }, ... } - `at` in
+// author coords; `rotation` is the game's heading (0-255, East 0, South 64), `direction` a name as create_unit takes.
+// Unknown types are skipped with a warning.
 LuaUnitBlock Ai_UnitBlock(sol::table list) {
   static std::deque<std::vector<UnitRecord>> tables;
   static std::deque<UnitBlock>               blocks;
@@ -1174,7 +1204,7 @@ Trigger Trigger_Damaged(sol::table o) {
                   o, "damaged");
 }
 void RegisterGroupBindings(sol::state& lua) {
-  // trigger.damaged (needs LuaGroup): into the trigger table made before.
+  // trigger.damaged is registered here, where LuaGroup is known; RegisterBindings has made the trigger table.
   if (sol::optional<sol::table> trig = lua["trigger"]) trig->set_function("damaged", &Trigger_Damaged);
   sol::table ai = lua.create_named_table("ai");
   ai.set_function("building_group", [](sol::object p) { return Ai_Create(p, GroupKind::Building); });
@@ -1182,7 +1212,8 @@ void RegisterGroupBindings(sol::state& lua) {
   ai.set_function("mining_group",   [](sol::object p) { return Ai_Create(p, GroupKind::Mining); });
   ai.set_function("unit_block",     &Ai_UnitBlock);
   // block:create_units(player [, lights]): the block's units for `player`, in no group, as the game's
-  // TethysGame::CreateUnitBlock makes a mission's exported table (CES1's computer base); how many were made.
+  // TethysGame::CreateUnitBlock makes a mission's exported table (CES1's computer base); returns how many were
+  // made (0 without a player). Lights default to off.
   lua.new_usertype<LuaUnitBlock>("UnitBlock", sol::no_constructor,
       "create_units", [](const LuaUnitBlock& b, sol::object player, sol::optional<bool> lights) {
         const int num = PlayerNumFrom(player);
@@ -1279,8 +1310,9 @@ void RegisterGroupBindings(sol::state& lua) {
       "do_guard_rect",    [](LuaGroup& g) { if (GroupIs(g, GroupKind::Fight, "do_guard_rect")) FightGroup(g.id).DoGuardRect(); },
       "do_patrol_only",   [](LuaGroup& g) { if (GroupIs(g, GroupKind::Fight, "do_patrol_only")) FightGroup(g.id).DoPatrolOnly(); },
       // group:set_patrol({ {x, y}, ... } [, first]) - the route a patrolling group follows (FightGroup::SetPatrolMode):
-      // up to 8 waypoints; `first` is the route's first field as the mission gives it (CEP1's scouts: 2). The game keeps
-      // a pointer to the waypoints, so they're kept for the rest of the game.
+      // up to 8 waypoints (more are ignored; unused slots are (-1, -1)); `first` is the route's first field as the
+      // mission gives it, 0 if left out (CEP1's scouts: 2). The game keeps pointers to the route and its waypoints, so
+      // both are kept for the process's life.
       "set_patrol",       [](LuaGroup& g, sol::table points, sol::optional<int> first) {
         if (!GroupIs(g, GroupKind::Fight, "set_patrol")) return;
         static std::deque<std::array<Location, 8>> routes;
@@ -1348,7 +1380,7 @@ void RegisterBindings(sol::state& lua) {
   game.set_function("find_build_site", &Game_FindBuildSite); // footprint-valid structure site (DoBuild anchor)
   game.set_function("footprint",   &Game_Footprint);   // a structure type's tile size (core + total)
   game.set_function("cell",        &Game_Cell);        // read a tile's terrain (passable/cliff/lava/...)
-  game.set_function("can_place",   &Game_CanPlace);    // engine check: can a structure tile go here?
+  game.set_function("can_place",   &Game_CanPlace);    // tile-flag check: can a structure tile go here?
   game.set_function("map_size",    &Game_MapSize);     // playable map dimensions
   game.set_function("tech",        &Game_Tech);        // a research topic from the loaded tech tree
 
@@ -1401,8 +1433,6 @@ void RegisterBindings(sol::state& lua) {
       for (int x = r.x1; x <= r.x2; ++x)
         GameMap::SetLavaPossible(Location(x, y), v);
   });
-  // A tile's graphic: its index in the map's tile mappings (as a map editor shows it). The stock
-  // lava maps swap in volcano tiles before an eruption: game.set_tile({ 52, 4 }, 1147).
   game.set_function("units_in_range", &Game_UnitsInRange);
   game.set_function("units_in_rect",  &Game_UnitsInRect);
   game.set_function("rand_point", &Game_RandPoint);
@@ -1414,13 +1444,16 @@ void RegisterBindings(sol::state& lua) {
     const Location t = LocFrom(target), f = LocFrom(from);
     using Fn = void(__fastcall*)(int, int, int, int, int);
     reinterpret_cast<Fn>(0x478420)(f.x, f.y, PlayerNumFrom(player), t.x, t.y); });
-  // game.wreckage() - the wreckage on the map (the gaia player's, 6), as a stock mission walks it (Eden 6).
+  // game.wreckage() - the wreckage on the map (type 0x54, the gaia player's, 6), as a stock mission walks it
+  // (Eden 6).
   game.set_function("wreckage", [](sol::this_state ts) {
     sol::state_view L(ts);
     sol::table out = L.create_table();
     int i = 1;
     for (Unit u : PlayerVehicleEnum(6, MapID(0x54))) out[i++] = u;
     return out; });
+  // A tile's graphic: its index in the map's tile mappings (as a map editor shows it). The stock
+  // lava maps swap in volcano tiles before an eruption: game.set_tile({ 52, 4 }, 1147).
   game.set_function("tile",     [](sol::object at) { return GameMap::GetTile(LocFrom(at)); });
   game.set_function("set_tile", [](sol::object at, int index) { GameMap::SetTile(LocFrom(at), index); });
   // A setup's own map edits (Tutorial 5's): a tile set as the map loads, and a tile's cell type (the game's
@@ -1539,9 +1572,8 @@ void RegisterBindings(sol::state& lua) {
                                                     gOrders.push_back({ u, OrderKind::Move, p.x, p.y, Unit() }); },
       // attack_move(target): if given a unit, hunt and attack it; if given a location, advance there
       // aggressively (DoAttack-to-ground, firing en route). NOTE: a plain DoMove (CmdMove) on a unit
-      // freshly created this/last tick crashes OP2's pathfinder - DoAttack does not. This is the stable
-      // r308 behaviour; r310 had changed the location case to Move, which is what broke spawned-defender
-      // missions. Keep this as AttackGround.
+      // freshly created this/last tick crashes OP2's pathfinder - DoAttack does not - so the location
+      // case stays AttackGround (as Move it breaks missions that spawn defenders).
       "attack_move", [](Unit& u, sol::object tgt) {
                        if (tgt.is<Unit>()) { Unit t = tgt.as<Unit>(); const Location p = t.GetLocation();
                                              gOrders.push_back({ u, OrderKind::AttackUnit, p.x, p.y, t }); }
@@ -1639,6 +1671,8 @@ void RegisterBindings(sol::state& lua) {
       "is_offensive",       sol::property([](const Unit& u) { return u.IsOffensive(); }),
       "is_infected",        sol::property([](const Unit& u) { return u.IsInfected(); }),
       "disabled",           sol::property([](const Unit& u) { return u.IsDisabled(); }),
+      // The game's exported Unit::IsBusy, not Tethys's (see GameIsBusy): a Spaceport stays busy until its rocket
+      // is built.
       "busy",               sol::property([](const Unit& u) { return GameIsBusy(u); }),
       // [Garage, StructureFactory, Spaceport] a bay holds something.
       "occupied_bay",       sol::property([](const Unit& u) { return u.IsLive() && GameHasOccupiedBay(u); }),
@@ -1674,7 +1708,7 @@ void RegisterBindings(sol::state& lua) {
       "hp",      sol::property([](const Unit& u) { return u.GetMaxHitpoints() - u.GetDamage(); }),
       "health",  sol::property([](const Unit& u) { const int m = u.GetMaxHitpoints();
                                                    return (m > 0) ? double(m - u.GetDamage()) / m : 0.0; }),
-      "damage",  [](Unit& u, int n) { if (u.IsLive()) u.AddDamage(n); },                       // SetDamage kills if >= max
+      "damage",  [](Unit& u, int n) { if (u.IsLive()) u.AddDamage(n); },                       // past max_hp kills it
       "heal",    [](Unit& u, int n) { if (u.IsLive()) u.SetDamage(std::max(0, u.GetDamage() - n)); },
 
       // ---- lifecycle / ownership ----
@@ -1683,7 +1717,8 @@ void RegisterBindings(sol::state& lua) {
       "kill",          [](Unit& u) { if (u.IsLive()) u.DoDeath(); },                            // die with explosion
       "remove",        [](Unit& u) { if (u.IsLive()) u.DoPoof(); },                             // vanish, no animation
       // do_transfer(player): the game's own Unit::DoTransfer (0x476AF0), as a stock mission calls it (Eden 4's tanks
-      // and Scouts going over), not a command packet.
+      // and Scouts going over): the unit changes hands at once. transfer(player) goes through Tethys's DoTransfer,
+      // SEH-guarded.
       "do_transfer",   [](Unit& u, sol::object player) { const int p = PlayerNumFrom(player);
                          if (u.IsLive() && p >= 0) { using Fn = void(__thiscall*)(Unit*, int);
                                                      reinterpret_cast<Fn>(0x476AF0)(&u, p); } },
@@ -1717,16 +1752,20 @@ void RegisterBindings(sol::state& lua) {
       // ---- spaceport / garage / lights ----
       "launch",         [](Unit& u, sol::object target) { if (u.IsLive())
                           GuardedLaunch(u, target.valid() ? LocFrom(target) : Location()); },
+      // launch_at_pixel(px, py): launch at a map pixel (see LaunchAtPixel); launch(target) aims at a tile's centre.
       "launch_at_pixel", [](Unit& u, int px, int py) { if (u.IsLive()) GuardedLaunchAtPixel(u, px, py); },
+      // infect(): the Blight takes the unit (the game's Unit::DoInfect).
       "infect",         [](Unit& u) { if (u.IsLive()) GameDoInfect(u); },
       // No longer a special target (Unit::ClearSpecialTarget, 0x475F90, the game's own).
       "clear_special_target", [](Unit& u) { if (u.IsValid()) { using Fn = void(__thiscall*)(Unit*);
                                                                   reinterpret_cast<Fn>(0x475F90)(&u); } },
+      // set_damage(n): the unit's damage becomes n (hp = max_hp - n), through the game's own Unit::SetDamage;
+      // damage(n) adds to it. set_opp_fired_upon(on): whether the unit fires back when fired upon.
       "set_damage",     [](Unit& u, int n) { if (u.IsLive()) GameSetDamage(u, n); },
       "set_opp_fired_upon", [](Unit& u, bool on) { if (u.IsLive()) GameSetOppFiredUpon(u, on ? 1 : 0); },
       "dock_at_garage", [](Unit& u, Unit garage) { if (u.IsLive() && garage.IsValid()) GuardedDockGarage(u, garage); },
-      // Parked in bay 1-6 of the Garage whose dock is `at`, as a mission's setup parks a vehicle (Unit::PutInGarage,
-      // 0x476160, the game's own).
+      // put_in_garage(bay, at): parked at once in bay 1-6 of the Garage whose dock tile is `at`, as a mission's setup
+      // parks a vehicle (Unit::PutInGarage, 0x476160, the game's own; it takes a 0-based bay). Any other bay: nothing.
       "put_in_garage",  [](Unit& u, int bay, sol::object at) { if (u.IsLive() && bay >= 1 && bay <= 6) {
                           const Location d = LocFrom(at);
                           using Fn = void(__thiscall*)(Unit*, int, int, int);
@@ -1755,8 +1794,8 @@ void RegisterBindings(sol::state& lua) {
       "owns_any",    [](const LuaPlayer& p, const std::string& t) { return Player_OwnsAny(p.num, t); },
       "unit_count",  [](const LuaPlayer& p, const std::string& t) { return Player_UnitCount(p.num, t); },
       "units",       [](const LuaPlayer& p, sol::object t, sol::this_state ts) { return Player_Units(p.num, t, ts); },
-      // The player's buildings (of a type), in the game's PlayerBuildingEnum order (CES1's SpawnAttack counts them
-      // by area).
+      // buildings([type]): the player's buildings (all, or of one type; an unknown type gives an empty list), in the
+      // game's PlayerBuildingEnum order (CES1's SpawnAttack counts them by area).
       "buildings",   [](const LuaPlayer& p, sol::object typeArg, sol::this_state ts) {
         sol::state_view L(ts);
         sol::table out = L.create_table();
@@ -1784,6 +1823,11 @@ void RegisterBindings(sol::state& lua) {
       // working structures use), and the food stored's change over the last food update.
       "power",      sol::property([](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? i->amountPowerAvailable_ : 0; }),
       "food_net",   sol::property([](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? i->netFoodProduction_ : 0; }),
+      // How much common and rare ore the colony can hold (read-only): the game caps `ore` / `rare_ore` at these, as
+      // its last update worked them out from the colony's storage.
+      "ore_capacity",      sol::property([](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? i->maxCommonOre_ : 0; }),
+      "rare_ore_capacity", sol::property([](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? i->maxRareOre_ : 0; }),
+      // cost(type [, weapon]) -> { common=, rare= } (see Player_Cost).
       "cost",       [](const LuaPlayer& p, const std::string& t, sol::object w, sol::this_state ts) { return Player_Cost(p.num, t, w, ts); },
       // The difficulty level chosen in the Colony Games menu, as "Easy"/"Normal"/"Hard". Lets a mission
       // tweak its settings per difficulty (e.g. AI resources, disaster timing).
@@ -1820,19 +1864,22 @@ void RegisterBindings(sol::state& lua) {
       "mutually_ally_with", [](LuaPlayer& p, sol::object o) { const int n = PlayerNumFrom(o);
                               if (n >= 0) _Player(p.num).MutuallyAllyWith(n); },
 
-      // ---- the game's own checks, cached in the game's own _Player (Player[], 0x56C280; a fresh _Player's cache reads
-      //      "no"): call reset_checks first, as the stock missions do ----
+      // ---- the game's own checks of what the colony can still do. The game caches the answers in its own player
+      //      record (Player[], 0x56C280), so these call through Player[n] rather than a fresh _Player, whose cache
+      //      reads "no". Call reset_checks first, as the stock missions do ----
       "reset_checks",            [](LuaPlayer& p) { Tethys::TethysAPI::Player[p.num].ResetChecks(); },
       "can_build_building",      [](LuaPlayer& p) { return bool(Tethys::TethysAPI::Player[p.num].CanBuildBuilding()); },
-      // can_build_vehicle([arg]): the stock missions pass 1 (Eden 3's CheckForFail); Tethys passes 0.
+      // can_build_vehicle([arg]): called at 0x4777F0 with `arg` (default 0, what Tethys passes); the stock missions
+      // pass 1 (Eden 3's CheckForFail).
       "can_build_vehicle",       [](LuaPlayer& p, sol::optional<int> arg) {
                                    using Fn = int(__thiscall*)(void*, int);
                                    return reinterpret_cast<Fn>(0x4777F0)(&Tethys::TethysAPI::Player[p.num], arg.value_or(0)) != 0; },
       "can_build_space",         [](LuaPlayer& p) { return bool(Tethys::TethysAPI::Player[p.num].CanBuildSpace()); },
       "can_accumulate_ore",      [](LuaPlayer& p) { return bool(Tethys::TethysAPI::Player[p.num].CanAccumulateOre()); },
       "can_accumulate_rare_ore", [](LuaPlayer& p) { return bool(Tethys::TethysAPI::Player[p.num].CanAccumulateRareOre()); },
-      // Whether the player can research a technology now (_Player::canDoResearch; Eden 2's CheckForFail asks of each
-      // database it must rebuild).
+      // can_do_research(tech): the game's _Player::canDoResearch (Eden 2's CheckForFail asks it of each database it
+      // must rebuild); false for an id the tree hasn't, which isn't reported. Compare can_research, which asks the
+      // research tree as a lab's topic list does.
       "can_do_research",         [](LuaPlayer& p, int techId) {
                                    return IsValidTechId(techId) && bool(Tethys::TethysAPI::Player[p.num].CanDoResearch(techId)); },
       // player:total_strength(): the game's measure of the player's military (GetTotalPlayerStrength, 0x477DA0), which
@@ -1844,13 +1891,15 @@ void RegisterBindings(sol::state& lua) {
       "go_plymouth", [](LuaPlayer& p) { _Player(p.num).GoPlymouth(); },
       "go_human",    [](LuaPlayer& p) { _Player(p.num).GoHuman(); },
       "go_ai",       [](LuaPlayer& p) { _Player(p.num).GoAI(); },
-      // The group a computer player's new units join when no other takes them.
+      // set_default_group(group): the group a computer player's new units join when no other takes them (set on the
+      // game's own player record, as the checks above).
       "set_default_group", [](LuaPlayer& p, const LuaGroup& g) { if (g.id >= 0) Tethys::TethysAPI::Player[p.num].SetDefaultGroup(ScGroup(g.id)); },
-      // The player's default group as the game keeps it: the fight group it makes for each player at the start,
-      // unless a mission set another (GetDefaultGroup 0x4775C0). AutoDemo 2 sets its area and lights.
+      // default_group(): the player's default group as the game keeps it: the fight group it makes for each player at
+      // the start, unless a mission set another (GetDefaultGroup 0x4775C0); an invalid Group if there is none. Handed
+      // out as a Fight group (AutoDemo 2 sets its area and lights).
       "default_group", [](const LuaPlayer& p) {
                          // _Player::GetDefaultGroup (0x4775C0) returns its ScGroup through a hidden pointer (thiscall: the
-                         // player in ecx, the pointer on the stack); Tethys's thunk passes them otherwise and wrote the
+                         // player in ecx, the pointer on the stack); Tethys's thunk passes them otherwise and writes the
                          // group's id over the player's (Player[n].id_).
                          int ret[2] = { -1, -1 };
                          using Fn = int*(__thiscall*)(void*, int*);
@@ -1868,11 +1917,10 @@ void RegisterBindings(sol::state& lua) {
       "center",   [](const Region& r, sol::this_state ts) {
         sol::state_view L(ts);
         sol::table t = L.create_table();
-        // Region coords are OP2 engine-internal (padded-grid) values, kept as-is on
-        // purpose: the engine requires the internal offset (~x+31 on normal maps),
-        // same convention as the C++ mission SDK. Placement in-game is correct.
-        t["x"] = (r.x1 + r.x2) / 2;
-        t["y"] = (r.y1 + r.y2) / 2;
+        // The region holds internal (padded-grid) tiles; its centre comes back in author coords like unit.x/y, so
+        // the table can go straight to `at =` (LocFrom pads a table again). Passing the region itself also works.
+        t["x"] = (r.x1 + r.x2) / 2 - GameMap::GetPaddingWidth() + 1;
+        t["y"] = (r.y1 + r.y2) / 2 + 1;
         return t;
       });
 

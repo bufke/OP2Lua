@@ -1,5 +1,5 @@
 // Names.cpp - lookup tables between author-facing names and engine ids:
-// type names <-> MapID, direction names -> UnitDirection, and sound names -> SoundID.
+// type names <-> MapID, direction names -> UnitDirection, sound names -> SoundID, and cargo names <-> CargoType.
 
 #include "Names.h"
 
@@ -52,7 +52,7 @@ const std::vector<std::pair<const char*, MapID>>& MapIdTable() {
       // The Scorpion's weapon ('SCORPION_WEAPON').
       { "EnergyCannon", MapID::EnergyCannon },
       { "Wreckage", MapID::Wreckage },
-      // A Spaceport's EMP missile ('EMP_MISSILE'), for unit:produce on a Spaceport and unit:launch.
+      // A Spaceport's EMP missile ('EMP_MISSILE'), for unit:develop on a Spaceport and unit.object_on_pad.
       { "EMPMissile", MapID::EMPMissile },
       // Starship / satellites + Spaceport cargo rockets (for the Starship colony victory).
       { "EDWARDSatellite", MapID::EDWARDSatellite }, { "SolarSatellite", MapID::SolarSatellite },
