@@ -165,7 +165,7 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
-// game.version() -> "0.7.5", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+// game.version() -> "0.7.9", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
 std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
 
 // game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
@@ -1242,13 +1242,20 @@ void RegisterGroupBindings(sol::state& lua) {
       "valid", sol::property([](const LuaGroup& g) { return g.id >= 0 && ScGroup(g.id).GetImpl() != nullptr; }),
       "units", &Group_Units,
       "unit_count", [](const LuaGroup& g) { return g.id >= 0 ? ScGroup(g.id).TotalUnitCount() : 0; },
-      // The first unit in the group of a type (and weapon or kit), or nil.
+      // The first unit in the group of a type (and weapon or kit), or nil. Without a weapon it walks the group's
+      // units in order, as a mission's GroupEnumerator does: the game's own lookup by type and cargo takes MapID::Any
+      // as a cargo to match, so it found no Structure Factory (Peacekeeper's computer base got no kits).
       "first_of_type", [](const LuaGroup& g, const std::string& type, sol::object weapon, sol::this_state ts) -> sol::object {
         sol::state_view L(ts);
         if (g.id < 0) return sol::make_object(L, sol::lua_nil);
         const MapID t = MapIdFromName(type);
-        const MapID w = weapon.is<std::string>() ? WeaponFor(t, MapIdFromName(weapon.as<std::string>())) : MapID::Any;
-        const Unit u = ScGroup(g.id).GetFirstOfType(t, w);
+        ScGroup sg(g.id);
+        if (sg.GetImpl() == nullptr) return sol::make_object(L, sol::lua_nil);
+        if (!weapon.is<std::string>()) {
+          for (Unit u : sg) if (u.IsLive() && u.GetType() == t) return sol::make_object(L, u);
+          return sol::make_object(L, sol::lua_nil);
+        }
+        const Unit u = sg.GetFirstOfType(t, WeaponFor(t, MapIdFromName(weapon.as<std::string>())));
         return u.IsLive() ? sol::make_object(L, u) : sol::make_object(L, sol::lua_nil); },
       "take_unit",   [](LuaGroup& g, Unit u) { if (g.id >= 0 && u.IsValid()) ScGroup(g.id).TakeUnit(u); },
       "remove_unit", [](LuaGroup& g, Unit u) { if (g.id >= 0 && u.IsValid()) ScGroup(g.id).RemoveUnit(u); },

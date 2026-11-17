@@ -5,10 +5,17 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+## [0.7.9] - 2026-11-17
+
+The full list is in CHANGES.md under [0.7.9].
+
 ### Fixed
 
 - Placement takes `at = { x =, y = }` and the game's own tile, `{ x =, y =, raw = true }`, as script calls do.
-- OP2LuaEditor: Mission Properties takes a campaign mission's type (`"1"` to `"12"`).
+- `group:first_of_type(type)` without a weapon found nothing, so a converted computer player's Structure Factory
+  got no kits (Peacekeeper, Eden 11).
+- OP2LuaEditor 0.7.9 (build 0025): Mission Properties takes a campaign mission's type (`"1"` to `"12"`); a sound
+  when a map has loaded.
 - docs/FILE-FORMAT.md: the mission file reference.
 
 ## [0.7.6] - 2026-11-17

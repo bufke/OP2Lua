@@ -630,6 +630,8 @@ Public Class fMain
                 Debug.WriteLine("The map's tile group names are corrupt.")
             End If
 
+            PlayMapLoadedSound()
+
             Return True
 
         Catch ex As Exception
@@ -639,6 +641,26 @@ Public Class fMain
             Return False
         End Try
     End Function
+
+    ''' <summary>
+    ''' Player for the map-loaded sound. Kept in a field: Play is asynchronous and plays from the player's loaded data.
+    ''' </summary>
+    Private mapLoadedSoundPlayer As SoundPlayer
+
+    ''' <summary>
+    ''' Plays the embedded beep5.wav when a map has loaded.
+    ''' </summary>
+    Private Sub PlayMapLoadedSound()
+        Try
+            If mapLoadedSoundPlayer Is Nothing Then
+                mapLoadedSoundPlayer = New SoundPlayer(My.Resources.beep5)
+                mapLoadedSoundPlayer.Load()
+            End If
+            mapLoadedSoundPlayer.Play()
+        Catch ex As Exception
+            Debug.WriteLine("Could not play the map-loaded sound: " & ex.Message)
+        End Try
+    End Sub
 
     ''' <summary>
     ''' Updates all UI labels with information about the loaded map

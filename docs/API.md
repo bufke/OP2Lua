@@ -1,7 +1,7 @@
 # OP2Lua Mission API
 
 The surface a mission author works with in `mission.lua`. Small, shaped like the game, and
-multiplayer-safe by construction (see the note at the bottom). Implemented as of v0.7.6.
+multiplayer-safe by construction (see the note at the bottom). Implemented as of v0.7.9.
 
 ## Coordinates (type what you see in-game)
 
@@ -84,7 +84,7 @@ Prefer `at_mark` / `marks(n)` over the legacy `game.seconds` / `game.minutes`.
 |---|---|
 | `game.create_unit{ type=, player=, at=, count=, weapon=, direction=, lights= }` | Create units; returns a list of `Unit`. `at` accepts a `Region`, a `Unit`, or `{x,y}`. `player` accepts a `Player` or a 1-based number. Multiple units are spread over tiles automatically; `exact = true` places them on `at` itself, as a mission's setup places its bases (structures beside tubes). |
 | `game.message_at(text, sound, player, px, py)` | A message for one player (`nil`: everyone) that points at a spot of the map in pixels, as the stock missions post theirs (CPS2's "Microbe growth detected!"). |
-| `game.version()` | The running OP2LuaCore: its version and when its DLL was built, two strings: `local v, built = game.version()` gives `"0.7.6"`, `"2026-11-17 12:15:06"`. The build time is the DLL's link time (a copy keeps it), the same one the log's first line and OP2LuaEditor's status bar show. |
+| `game.version()` | The running OP2LuaCore: its version and when its DLL was built, two strings: `local v, built = game.version()` gives `"0.7.9"`, `"2026-11-17 12:15:06"`. The build time is the DLL's link time (a copy keeps it), the same one the log's first line and OP2LuaEditor's status bar show. |
 | `game.op2_version()` | The running Outpost 2: the version the game goes by and Outpost2.exe's own file version, two strings: `local v, exe = game.op2_version()` gives `"1.4.0.1"`, `"1.2.0.7"` under OPU 1.4.x. The first is the game's `TApp::Version`, the number its multiplayer lobby compares (`1.2.0.7` for the GOG exe alone, `1.3.0.4` retail 1.3.6, `1.4.0.1` OPU 1.4.x); OPU sets it, the file on disk keeps 1.2.0.7. For display only: don't branch game logic on it in multiplayer. |
 | `game.message(text [, sound])` | In-game message (comms panel). `sound` is a name (`"EnemyUnitSighted"`) or raw id; omit for the default. **Keep `text` short - OP2's comms panel truncates around ~90 chars; put full detail in the log via `print()` instead.** |
 | `game.sound(name_or_id [, toPlayer])` | Play a game sound (e.g. `game.sound("WeAreUnderAttack")`). |
