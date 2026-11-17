@@ -184,10 +184,13 @@ T Field(const sol::table& t, const char* key, T dflt) {
   return v.value_or(dflt);
 }
 
-// {x, y} (array) -> Location. Coords are author-facing (editor / status-bar) coordinates,
-// translated to OP2's internal padded grid by GameMap::At (see GameMap.h).
+// {x, y} or {x =, y =} -> Location. Coords are author-facing (editor / status-bar) coordinates,
+// translated to OP2's internal padded grid by GameMap::At (see GameMap.h). { x =, y =, raw = true } is the
+// game's own tile, used as it is, as in a script call (a stock mission's tile off the map, which At would wrap).
 Location LocFromTable(const sol::table& t) {
-  return GameMap::At(t.get_or(1, 0), t.get_or(2, 0));
+  sol::optional<int> x = t["x"], y = t["y"];
+  if (x && y && t.get_or("raw", false)) return Location(*x, *y);
+  return GameMap::At(x ? *x : t.get_or(1, 0), y ? *y : t.get_or(2, 0));
 }
 
 // Build a Region from a placement region array ({x,y} point or {x1,y1,x2,y2} rect). Corners are

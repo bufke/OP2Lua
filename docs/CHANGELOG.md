@@ -3,6 +3,14 @@
 All notable changes to OP2Lua (the engine: `OP2LuaCore.dll`, the mission stub, the editor and tools).
 For the author-facing SDK, see the OP2LuaSDK changelog.
 
+## [Unreleased]
+
+### Fixed
+
+- Placement takes `at = { x =, y = }` and the game's own tile, `{ x =, y =, raw = true }`, as script calls do.
+- OP2LuaEditor: Mission Properties takes a campaign mission's type (`"1"` to `"12"`).
+- docs/FILE-FORMAT.md: the mission file reference.
+
 ## [0.7.6] - 2026-11-17
 
 The full list is in CHANGES.md under [0.7.6].

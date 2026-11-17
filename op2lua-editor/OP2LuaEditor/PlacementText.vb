@@ -487,9 +487,11 @@ Public Module PlacementText
     ' ===== the mission DLL's DescBlock =====
 
     ' A placement type name -> the DescBlock's MissionType. Both the SDK's names (MultiLastOneStanding, as op2dll
-    ' writes them) and op2lua-newmission's --type names (LastOneStanding) are accepted. 0 = not a type the stub
-    ' takes (a campaign mission's number, say).
+    ' writes them) and op2lua-newmission's --type names (LastOneStanding) are accepted, and a campaign mission's
+    ' number, 1 to 12, as op2dll writes it ("1"). 0 = not a mission type.
     Public Function MissionTypeValue(name As String) As Integer
+        Dim campaign As Integer
+        If Integer.TryParse(If(name, "").Trim(), campaign) AndAlso campaign >= 1 AndAlso campaign <= 12 Then Return campaign
         Select Case If(name, "").Trim().ToLowerInvariant()
             Case "colony" : Return -1
             Case "autodemo" : Return -2
