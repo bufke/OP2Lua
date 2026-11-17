@@ -73,6 +73,7 @@ Public Module PlacementText
         Return -1
     End Function
 
+    ' Overwrite sb[from, upTo) with fill, leaving line breaks so line numbers still match.
     Private Sub BlankRange(sb As StringBuilder, from As Integer, upTo As Integer, fill As Char)
         For k As Integer = from To upTo - 1
             If sb(k) <> ControlChars.Lf AndAlso sb(k) <> ControlChars.Cr Then sb(k) = fill
@@ -267,6 +268,7 @@ Public Module PlacementText
         Return If(text.Contains(vbCrLf) OrElse Not text.Contains(vbLf), vbCrLf, vbLf)
     End Function
 
+    ' s as a Lua string literal (quotes and backslashes escaped).
     Public Function LuaString(s As String) As String
         Return """" & s.Replace("\", "\\").Replace("""", "\""") & """"
     End Function
@@ -284,6 +286,7 @@ Public Module PlacementText
         Public OrigCount As Integer          ' entries in the file's table when it was read
     End Class
 
+    ' The file's units table: each entry's text kept as it is (Raw, Lead), with the fields the editor shows read out.
     Public Function ParseUnits(text As String) As UnitsBlock
         Dim result As New UnitsBlock()
         result.NewLine = NewLineOf(text)
@@ -358,6 +361,7 @@ Public Module PlacementText
         Return sb.ToString()
     End Function
 
+    ' s without its first comma outside comments and strings (the separator before an entry).
     Private Function RemoveFirstComma(s As String) As String
         Dim k As Integer = MaskLua(s).IndexOf(","c)
         If k < 0 Then Return s
@@ -499,6 +503,7 @@ Public Module PlacementText
         End Select
     End Function
 
+    ' Land Rush, Space Race, Resource Race, Midas or Last One Standing: listed in the multiplayer lobby.
     Public Function IsMultiplayerType(name As String) As Boolean
         Return MissionTypeValue(name) <= -4
     End Function

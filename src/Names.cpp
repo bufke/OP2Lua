@@ -84,10 +84,20 @@ std::string NameFromMapId(MapID id) {
   static const std::unordered_map<int, std::string> kById = [] {
     std::unordered_map<int, std::string> m;
     for (const auto& [n, mid] : MapIdTable()) m.emplace(static_cast<int>(mid), n);
+    // A Guard Post's turret versions read back under the names that make them (see WeaponFor).
+    m.emplace(static_cast<int>(MapID::StarflareGP), "Starflare");
+    m.emplace(static_cast<int>(MapID::SupernovaGP), "Supernova");
     return m;
   }();
   const auto it = kById.find(static_cast<int>(id));
   return (it != kById.end()) ? it->second : std::string();
+}
+
+MapID WeaponFor(MapID carrier, MapID weapon) {
+  if (carrier != MapID::GuardPost) return weapon;
+  if (weapon == MapID::Starflare) return MapID::StarflareGP;
+  if (weapon == MapID::Supernova) return MapID::SupernovaGP;
+  return weapon;
 }
 
 int DirFromName(const std::string& name) {

@@ -8,6 +8,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <ctime>
 #include <exception>
 #include <string>
 #include <system_error>
@@ -107,25 +108,10 @@ void EnsureCoreInit() {
                      reinterpret_cast<LPCWSTR>(&EnsureCoreInit), &pinned);
 }
 
-// Log the running core's version + the DLL's actual file timestamp - the ground truth for
-// "which build is this", independent of per-file __TIME__ stamps. Logged once per mission load.
+// Log the running core's version + when the DLL was built - the ground truth for "which build is this".
+// Logged once per mission load.
 void LogBuildStamp() {
-  char dllTime[64] = "unknown";
-  HMODULE hSelf = nullptr;
-  if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                         reinterpret_cast<LPCWSTR>(&EnsureCoreInit), &hSelf)) {
-    wchar_t modPath[MAX_PATH] = {};
-    GetModuleFileNameW(hSelf, modPath, MAX_PATH);
-    WIN32_FILE_ATTRIBUTE_DATA fad = {};
-    if (GetFileAttributesExW(modPath, GetFileExInfoStandard, &fad)) {
-      FILETIME lt = {}; SYSTEMTIME st = {};
-      FileTimeToLocalFileTime(&fad.ftLastWriteTime, &lt);
-      FileTimeToSystemTime(&lt, &st);
-      std::snprintf(dllTime, sizeof(dllTime), "%04d-%02d-%02d %02d:%02d:%02d",
-                    st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    }
-  }
-  LOG(INFO) << "OP2LuaCore " OP2LUA_VERSION " (DLL built " << dllTime << ")";
+  LOG(INFO) << "OP2LuaCore " OP2LUA_VERSION " (DLL built " << BuildTime() << ")";
 }
 
 // Log which .map the mission actually loads. OP2 reads the map filename from the stub DLL's exported
@@ -261,6 +247,62 @@ void LoadMissionDir(const std::string& dir, const std::string& base) {
 }
 
 }  // namespace
+
+std::string BuildTime() {
+  HMODULE hSelf = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCWSTR>(&BuildTime), &hSelf)) {
+    return "unknown";
+  }
+  // The link time in the loaded image's PE header (the COFF TimeDateStamp, seconds since 1970 UTC): unlike the
+  // file's modified time it stays the same when the DLL is copied, and it's what OP2LuaEditor shows.
+  const auto* base = reinterpret_cast<const unsigned char*>(hSelf);
+  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+  const __time64_t stamp = nt->FileHeader.TimeDateStamp;
+  tm local = {};
+  if (_localtime64_s(&local, &stamp) != 0) return "unknown";
+  char text[32] = {};
+  std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S", &local);
+  return text;
+}
+
+std::string GameVersion() {
+  // TApp::Version, called on the game's TApp: the version the running game goes by, the one its lobby compares with a
+  // joining player's ("wrong game version"). 0x01020007 is 1.2.0.7 (the GOG exe alone); OPU 1.4.x makes it 1.4.0.1.
+  // Both are Outpost2.exe exports, found by name. TApp::Version is __thiscall with no arguments: a __fastcall
+  // pointer passes `this` in ECX the same way (EDX is ignored).
+  HMODULE exe = GetModuleHandleW(nullptr);
+  using VersionFn = unsigned long(__fastcall*)(void* self, void* unused);
+  const auto version = reinterpret_cast<VersionFn>(GetProcAddress(exe, "?Version@TApp@@QAEKXZ"));
+  void* const app = reinterpret_cast<void*>(GetProcAddress(exe, "?gTApp@@3VTApp@@A"));
+  if (version == nullptr || app == nullptr) return std::string();
+  const unsigned long v = version(app, nullptr);
+  char text[32] = {};
+  std::snprintf(text, sizeof(text), "%lu.%lu.%lu.%lu", (v >> 24) & 0xFF, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+  return text;
+}
+
+std::string GameFileVersion() {
+  // The FileVersion of the running Outpost2.exe, from the version resource in its loaded image (resource 1 of type
+  // RT_VERSION). The VS_FIXEDFILEINFO block sits a few bytes in, after the resource's header and key, on a 4-byte
+  // boundary; it starts with the signature 0xFEEF04BD.
+  HMODULE exe = GetModuleHandleW(nullptr);
+  HRSRC res = FindResourceW(exe, MAKEINTRESOURCEW(1), MAKEINTRESOURCEW(16));   // RT_VERSION
+  if (res == nullptr) return std::string();
+  const auto* data = static_cast<const unsigned char*>(LockResource(LoadResource(exe, res)));
+  const DWORD size = SizeofResource(exe, res);
+  if (data == nullptr) return std::string();
+  for (DWORD i = 0; i + sizeof(VS_FIXEDFILEINFO) <= size; i += 4) {
+    const auto* ffi = reinterpret_cast<const VS_FIXEDFILEINFO*>(data + i);
+    if (ffi->dwSignature != 0xFEEF04BD) continue;
+    char text[32] = {};
+    std::snprintf(text, sizeof(text), "%u.%u.%u.%u", HIWORD(ffi->dwFileVersionMS), LOWORD(ffi->dwFileVersionMS),
+                  HIWORD(ffi->dwFileVersionLS), LOWORD(ffi->dwFileVersionLS));
+    return text;
+  }
+  return std::string();
+}
 
 void Reset() {
   g = MissionState();

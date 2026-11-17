@@ -20,12 +20,15 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "ApiTypes.h"
 #include "LuaHost.h"
 #include "Log.h"
 #include "Names.h"
+#include "Mission.h"
+#include "OP2LuaCore.h"   // OP2LUA_VERSION
 
 // Tethys headers use unqualified min()/max() (they expect the <windows.h> macros). We build with
 // NOMINMAX (sol2/STL require it), so pull std::min/std::max into the global namespace instead.
@@ -162,6 +165,18 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
+// game.version() -> "0.7.5", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
+
+// game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
+// Outpost2.exe's own file version ("1.2.0.7"); nil for either one not found.
+std::tuple<sol::object, sol::object> Game_Op2Version(sol::this_state ts) {
+  sol::state_view L(ts);
+  const std::string v = ::OP2Lua::Mission::GameVersion(), f = ::OP2Lua::Mission::GameFileVersion();
+  return { v.empty() ? sol::make_object(L, sol::lua_nil) : sol::make_object(L, v),
+           f.empty() ? sol::make_object(L, sol::lua_nil) : sol::make_object(L, f) };
+}
+
 Tethys::MoraleLevel MoraleFromName(const std::string& n) {
   if (n == "Excellent" || n == "Great")  return Tethys::MoraleLevel::Excellent;
   if (n == "Fair" || n == "OK")          return Tethys::MoraleLevel::Fair;
@@ -209,7 +224,7 @@ sol::table Game_CreateUnit(sol::table opts, sol::this_state ts) {
 
   MapID weapon = MapID::None;
   sol::optional<std::string> w = opts["weapon"];
-  if (w) weapon = MapIdFromName(*w);
+  if (w) weapon = WeaponFor(type, MapIdFromName(*w));   // a Guard Post's Starflare is its turret's
   const auto dir = static_cast<UnitDirection>(DirFromName(opts.get_or("direction", std::string("East"))));
   const bool lights = opts.get_or("lights", true);
 
@@ -837,7 +852,7 @@ sol::object Player_Cost(int num, const std::string& typeName, sol::object weapon
   Tethys::MapObjectType*const mot = (type != MapID::None) ? Tethys::MapObjectType::GetInstance(static_cast<int>(type)) : nullptr;
   if ((mot == nullptr) || !ValidPlayerNum(num)) return sol::make_object(L, sol::lua_nil);
   int common = mot->playerStats_[num].commonCost, rare = mot->playerStats_[num].rareCost;
-  const MapID weapon = weaponArg.is<std::string>() ? MapIdFromName(weaponArg.as<std::string>()) : MapID::None;
+  const MapID weapon = weaponArg.is<std::string>() ? WeaponFor(type, MapIdFromName(weaponArg.as<std::string>())) : MapID::None;
   Tethys::MapObjectType*const w = (weapon != MapID::None) ? Tethys::MapObjectType::GetInstance(static_cast<int>(weapon)) : nullptr;
   if (w != nullptr) {
     common += w->playerStats_[num].commonCost;
@@ -1130,8 +1145,9 @@ bool GroupIs(const LuaGroup& g, GroupKind k, const char* fn) {
                   << GroupKindName(g.kind) << " #" << g.id << ")";
   return false;
 }
-MapID WeaponOpt(const sol::object& o) {
-  return o.is<std::string>() ? MapIdFromName(o.as<std::string>()) : MapID::None;
+// An optional weapon (or kit) name as `carrier` mounts it (WeaponFor); None when absent.
+MapID WeaponOpt(MapID carrier, const sol::object& o) {
+  return o.is<std::string>() ? WeaponFor(carrier, MapIdFromName(o.as<std::string>())) : MapID::None;
 }
 
 // ai.unit_block{ { type=, at=, direction=|rotation=, weapon=, cargo=, amount=, classification= }, ... } - `at` in
@@ -1156,7 +1172,7 @@ LuaUnitBlock Ai_UnitBlock(sol::table list) {
     // Classification NotSet (0x10) unless given, as most records of the stock missions' tables have it (AutoDemo 2's,
     // La Corrida's); CEP1's Scouts have 9 (Colony).
     const int classification = r->get_or("classification", static_cast<int>(Tethys::UnitClassification::NotSet));
-    recs.emplace_back(type, at.x, at.y, 0, rotation, WeaponOpt(r->get<sol::object>("weapon")),
+    recs.emplace_back(type, at.x, at.y, 0, rotation, WeaponOpt(type, r->get<sol::object>("weapon")),
                       static_cast<Tethys::UnitClassification>(classification), static_cast<uint16_t>(cargoType),
                       static_cast<uint16_t>(r->get_or("amount", 0)));
   }
@@ -1230,8 +1246,9 @@ void RegisterGroupBindings(sol::state& lua) {
       "first_of_type", [](const LuaGroup& g, const std::string& type, sol::object weapon, sol::this_state ts) -> sol::object {
         sol::state_view L(ts);
         if (g.id < 0) return sol::make_object(L, sol::lua_nil);
-        const MapID w = weapon.is<std::string>() ? MapIdFromName(weapon.as<std::string>()) : MapID::Any;
-        const Unit u = ScGroup(g.id).GetFirstOfType(MapIdFromName(type), w);
+        const MapID t = MapIdFromName(type);
+        const MapID w = weapon.is<std::string>() ? WeaponFor(t, MapIdFromName(weapon.as<std::string>())) : MapID::Any;
+        const Unit u = ScGroup(g.id).GetFirstOfType(t, w);
         return u.IsLive() ? sol::make_object(L, u) : sol::make_object(L, sol::lua_nil); },
       "take_unit",   [](LuaGroup& g, Unit u) { if (g.id >= 0 && u.IsValid()) ScGroup(g.id).TakeUnit(u); },
       "remove_unit", [](LuaGroup& g, Unit u) { if (g.id >= 0 && u.IsValid()) ScGroup(g.id).RemoveUnit(u); },
@@ -1244,7 +1261,7 @@ void RegisterGroupBindings(sol::state& lua) {
       "set_delete_when_empty", [](LuaGroup& g, bool on) { if (g.id >= 0) ScGroup(g.id).SetDeleteWhenEmpty(on); },
       // How many of a unit (and weapon, nil for none) the group wants: its building group makes the rest.
       "set_targ_count", [](LuaGroup& g, const std::string& type, sol::object weapon, int count) {
-        if (g.id >= 0) ScGroup(g.id).SetTargCount(MapIdFromName(type), WeaponOpt(weapon), count); },
+        if (g.id >= 0) ScGroup(g.id).SetTargCount(MapIdFromName(type), WeaponOpt(MapIdFromName(type), weapon), count); },
       "clear_targ_count", [](LuaGroup& g) { if (g.id >= 0) ScGroup(g.id).ClearTargCount(); },
       // set_targ_counts(block): as many of each unit (and weapon) as the block has (ScGroup::SetTargCount(UnitBlock&),
       // Eden 11's guards).
@@ -1265,8 +1282,9 @@ void RegisterGroupBindings(sol::state& lua) {
       "record_building", [](LuaGroup& g, sol::object at, const std::string& type, sol::object weapon, sol::object group) {
         if (!GroupIs(g, GroupKind::Building, "record_building")) return;
         BuildingGroup bg(g.id);
-        if (group.is<LuaGroup>()) bg.RecordBuilding(LocFrom(at), MapIdFromName(type), WeaponOpt(weapon), ScGroup(group.as<LuaGroup>().id));
-        else bg.RecordBuilding(LocFrom(at), MapIdFromName(type), WeaponOpt(weapon)); },
+        const MapID t = MapIdFromName(type);
+        if (group.is<LuaGroup>()) bg.RecordBuilding(LocFrom(at), t, WeaponOpt(t, weapon), ScGroup(group.as<LuaGroup>().id));
+        else bg.RecordBuilding(LocFrom(at), t, WeaponOpt(t, weapon)); },
       // record_unit_block(block [, group]): every structure of the block.
       "record_unit_block", [](LuaGroup& g, const LuaUnitBlock& b, sol::object group) {
         if (!GroupIs(g, GroupKind::Building, "record_unit_block") || !b.block) return;
@@ -1364,6 +1382,8 @@ void RegisterBindings(sol::state& lua) {
   game.set_function("sound", &Game_Sound);
   game.set_function("rand", &Game_Rand);
   game.set_function("tick", &Game_Tick);
+  game.set_function("version", &Game_Version);
+  game.set_function("op2_version", &Game_Op2Version);
   game.set_function("morale_steady", &Game_MoraleSteady);
   game.set_function("free_morale", &Game_FreeMorale);
   game.set_function("create_unit", &Game_CreateUnit);
@@ -1634,7 +1654,7 @@ void RegisterBindings(sol::state& lua) {
       "produce",      [](Unit& u, const std::string& type, sol::optional<std::string> weapon) {
                         if (!u.IsLive()) return;
                         const MapID t = MapIdFromName(type);
-                        if (t != MapID::None) GuardedProduce(u, t, weapon ? MapIdFromName(*weapon) : MapID::None);
+                        if (t != MapID::None) GuardedProduce(u, t, weapon ? WeaponFor(t, MapIdFromName(*weapon)) : MapID::None);
                         else LOG_MISSION(WARNING) << "produce: unknown type '" << type << "'"; },
       // spaceport:develop(type) - build a rocket or its cargo at a Spaceport (e.g. "EMPMissile", "SolarSatellite").
       "develop",      [](Unit& u, const std::string& type) {
@@ -1731,7 +1751,7 @@ void RegisterBindings(sol::state& lua) {
 
       // ---- weapon ----
       "weapon",     sol::property([](const Unit& u) { return NameFromMapId(u.GetWeapon()); }),
-      "set_weapon", [](Unit& u, const std::string& w) { if (u.IsLive()) u.SetWeapon(MapIdFromName(w)); },
+      "set_weapon", [](Unit& u, const std::string& w) { if (u.IsLive()) u.SetWeapon(WeaponFor(u.GetType(), MapIdFromName(w))); },
 
       // ---- engineering (ConVec / Spider / Earthworker / Dozer) ----
       "repair",      [](Unit& u, Unit what) { if (u.IsLive() && what.IsValid()) GuardedRepair(u, what); },
@@ -1776,7 +1796,8 @@ void RegisterBindings(sol::state& lua) {
       // really the same slot under different names - matching the unit type you call them on.
       "kit",            sol::property([](const Unit& u) { return NameFromMapId(u.GetConVecCargo().unitType); }),
       "set_kit",        [](Unit& u, const std::string& type, sol::optional<std::string> topping) {
-                          if (u.IsLive()) u.SetCargo(MapIdFromName(type), topping ? MapIdFromName(*topping) : MapID::None); },
+                          const MapID kit = MapIdFromName(type);
+                          if (u.IsLive()) u.SetCargo(kit, topping ? WeaponFor(kit, MapIdFromName(*topping)) : MapID::None); },
 
       sol::meta_function::equal_to, [](const Unit& a, const Unit& b) { return a == b; });
 

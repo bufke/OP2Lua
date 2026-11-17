@@ -56,6 +56,7 @@ Public Class fMain
 
     Private statusStrip As New StatusStrip()                ' Status bar (bottom of form)
     Private lblToolStripMapName As New ToolStripStatusLabel()
+    Private lblToolStripMission As New ToolStripStatusLabel()      ' the open mission's .lua (UpdateMissionLabel)
     Private lblToolStripMapPath As New ToolStripStatusLabel()
     Private lblToolStripCoordinates As New ToolStripStatusLabel()   ' the tile under the cursor
     Private lblToolStripSelected As New ToolStripStatusLabel()      ' the selected (clicked) tile
@@ -307,6 +308,11 @@ Public Class fMain
         lblToolStripSelected.Name = "lblToolStripSelected"
         lblToolStripSelected.Text = "Selected: -"
         statusStrip.Items.Add(lblToolStripSelected)
+        statusStrip.Items.Add(New ToolStripSeparator())
+
+        lblToolStripMission.Name = "lblToolStripMission"
+        lblToolStripMission.Text = "No mission"
+        statusStrip.Items.Add(lblToolStripMission)
         statusStrip.Items.Add(New ToolStripSeparator())
 
         lblToolStripMapName.Name = "lblToolStripMapName"
@@ -757,6 +763,7 @@ Public Class fMain
             ClearMissionData()                       ' clear the placed regions + units (and their lists)
             currentPlacementFile = Nothing
             currentMissionScript = Nothing
+            UpdateMissionLabel()
 
             ' Disable the zoom and center buttons
             Dim btnResetZoom As Button = DirectCast(FindControl("btnResetZoom"), Button)

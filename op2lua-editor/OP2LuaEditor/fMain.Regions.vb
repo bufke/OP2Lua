@@ -1,18 +1,25 @@
 ' fMain.Regions.vb
 '
-' Visual region editing for OP2Lua missions, layered onto the OP2MapViewer form via a partial class.
-' Regions are the backbone of Lua mission logic (region:contains, spawn at = regions[...], trip-wires).
+' The OP2Lua mission layer of the editor, on top of the map viewer in fMain.vb (a partial class of the same form):
+'   - the Mission, Regions and Units menus and the side panel's regions / units lists;
+'   - opening a mission (placement.lua + its map), New Mission, Mission Properties, Save, and Test in OP2 (F5), which
+'     copies the mission into the game and starts it through op2launcher;
+'   - drawing the placement over the map: regions, units, beacons / walls / tubes / markers and dozed borders;
+'   - the status bar's mission and OP2LuaCore labels.
+' Reading and rewriting placement.lua text is in PlacementText.vb; the data types are in MissionTypes.vb.
 '
-' You draw rectangles / points on the map; they are saved into a placement.lua "regions" table and
-' can be loaded back and drawn on the map (round-trip). Coordinates are 1-based tile coords - the
-' same numbers the status bar shows and that go straight into placement.lua.
+' Coordinates are 1-based tile coordinates, the numbers the game's status bar shows and placement.lua holds; the map
+' bitmap's tiles are 0-based (TileToLua / LuaToTile).
 '
-' Hooks in fMain.vb (kept tiny):
-'   fMain_Load            -> SetupRegionsUI()
-'   MapPanel_Paint        -> DrawRegions(e.Graphics)
-'   MapPanel_MouseDown    -> If regionMode AndAlso RegionMouseDown(e) Then Return
-'   MapPanel_MouseMove    -> If regionMode Then RegionMouseMove(e)
-'   MapPanel_MouseUp      -> If regionMode Then RegionMouseUp(e)
+' What fMain.vb calls here:
+'   fMain_Load           -> SetupRegionsUI(), UpdateCoreLabel(), OpenMissionFile(path) for a .lua on the command line
+'   Settings             -> UpdateCoreLabel()
+'   MapPanel_Paint       -> DrawRegions(e.Graphics) (regions, then dozed borders, map objects and units)
+'   MapPanel_Mouse*      -> RegionMouseDown/Move/Up, UnitMouseDown/Move/Up in their modes; MouseToTileX/Y
+'   UpdatePropertyControls -> TileContentsText(x, y) for the side panel
+'   Close Map            -> ClearMissionData(), UpdateMissionLabel()
+'   Image export         -> RenderOverlayMapPixels(g)
+'   a .lua dropped on the map -> OpenMissionFile(path)
 
 Imports System.Drawing
 Imports System.IO
@@ -22,7 +29,8 @@ Imports System.Windows.Forms
 
 Partial Public Class fMain
 
-    ' Region/unit data types now live in MissionTypes.vb (top-level, so the Form designer is happy).
+    ' The data types (MissionRegion, MissionUnit, ...) are in MissionTypes.vb, outside the form, so the Form designer can
+    ' load fMain.
 
     ' ---- state ----
     Private regionList As New List(Of MissionRegion)
@@ -325,6 +333,7 @@ Partial Public Class fMain
         Return True
     End Function
 
+    ' In region mode: rubber-band the region being drawn, or move / resize the one grabbed.
     Public Sub RegionMouseMove(e As MouseEventArgs)
         If Not regionMode OrElse editOp = EditAction.None Then Return
         Dim tx As Integer = ClampTileX(MouseToTileX(e.X))
@@ -350,6 +359,7 @@ Partial Public Class fMain
         InvalidateMap()
     End Sub
 
+    ' In region mode: finish the drawing (a new region, named by the user) or the move / resize.
     Public Sub RegionMouseUp(e As MouseEventArgs)
         If Not regionMode OrElse editOp = EditAction.None Then Return
         If e.Button <> MouseButtons.Left Then Return
@@ -613,6 +623,7 @@ Partial Public Class fMain
         Return String.Join(vbCrLf, lines)
     End Function
 
+    ' Fill the regions list (and its header count) from regionList, keeping the selection.
     Private Sub RefreshRegionList()
         If lblRegionsHeader IsNot Nothing Then
             lblRegionsHeader.Text = "Regions (" & regionList.Count & ")   draw mode: drag = area, click = point"
@@ -991,6 +1002,7 @@ Partial Public Class fMain
 
         currentPlacementFile = placementFile
         currentMissionScript = If(scriptFile IsNot Nothing AndAlso File.Exists(scriptFile), scriptFile, Nothing)
+        UpdateMissionLabel()
         lastLoadedMapName = mapName
         If mnuMissionProps IsNot Nothing Then mnuMissionProps.Enabled = True
         If mnuTestInOp2 IsNot Nothing Then mnuTestInOp2.Enabled = True
@@ -1133,6 +1145,14 @@ Partial Public Class fMain
         Return False
     End Function
 
+    ' The open mission in the status bar: its script <Name>.lua, or the placement file when it has no script beside it;
+    ' the full path on hover. "No mission" when none is open.
+    Public Sub UpdateMissionLabel()
+        Dim f As String = If(currentMissionScript, currentPlacementFile)
+        lblToolStripMission.Text = If(String.IsNullOrEmpty(f), "No mission", Path.GetFileName(f))
+        lblToolStripMission.ToolTipText = If(f, "")
+    End Sub
+
     ' ===== the game's OP2LuaCore.dll (status bar) =====
     Private lblToolStripCore As ToolStripStatusLabel = Nothing
 
@@ -1167,6 +1187,7 @@ Partial Public Class fMain
     ' Files Test in OP2 has copied into the game this session (full paths, any case).
     Private ReadOnly deployedFiles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
 
+    ' Byte-for-byte the same file (length first, so a differing size costs nothing).
     Private Function FilesEqual(a As String, b As String) As Boolean
         Dim fa As New FileInfo(a), fb As New FileInfo(b)
         If fa.Length <> fb.Length Then Return False
@@ -1233,8 +1254,9 @@ Partial Public Class fMain
     End Function
 
     ' ===== New Mission (scaffold a fresh mission: clone+patch the bundled stub, write starter lua) =====
-    ' Mirrors op2lua-newmission: clones the bundled LuaMission.dll, byte-patches its menu name + map,
-    ' writes starter <Base>.lua + <Base>.placement.lua, into  <OP2>\OPU\maps\<Base>\ , then opens it.
+    ' As op2lua-newmission does: clones the bundled LuaMission.dll, byte-patches its menu name and map and its DescBlock
+    ' (mission type, players, max tech), writes a starter <Base>.lua + <Base>.placement.lua into <OP2>\OPU\maps\LUA,
+    ' then opens it.
     Private Sub NewMission_Click(sender As Object, e As EventArgs)
         If String.IsNullOrEmpty(My.Settings.OP2Path) Then
             MessageBox.Show("Set the Outpost 2 game directory in Settings first - new missions are written under it.",
@@ -1341,6 +1363,8 @@ Partial Public Class fMain
         Return Nothing
     End Function
 
+    ' The starter placement.lua for New Mission: a small two-player fight, or for a multiplayer type a Command Center per
+    ' player and no players table (the lobby sets each player's colony and colour).
     Private Function NewPlacementSkeleton(base As String, name As String, map As String, tech As String,
                                           missionType As String, maxTech As Integer, players As Integer) As String
         Dim q As Func(Of String, String) = Function(s) """" & s & """"
@@ -1398,6 +1422,8 @@ Partial Public Class fMain
         Return sb.ToString()
     End Function
 
+    ' The starter <Base>.lua for New Mission: win / lose on the Command Centers, or for a multiplayer type the lobby's
+    ' settings and the type's victory.
     Private Function NewMissionSkeleton(base As String, name As String, missionType As String) As String
         Dim sb As New StringBuilder()
         sb.AppendLine("-- " & base & ".lua  -  " & name & "  -  mission logic.")
@@ -1505,6 +1531,7 @@ Partial Public Class fMain
         End If
     End Sub
 
+    ' Save the regions and units into a placement file chosen by the user; it becomes the open mission's file.
     Private Sub SaveMissionAs()
         Using dlg As New SaveFileDialog()
             dlg.Title = "Save mission placement.lua"
@@ -1518,6 +1545,7 @@ Partial Public Class fMain
             If dlg.ShowDialog() <> DialogResult.OK Then Return
             SaveMissionToFile(dlg.FileName)
             currentPlacementFile = dlg.FileName
+            UpdateMissionLabel()
         End Using
     End Sub
 
@@ -1550,6 +1578,8 @@ Partial Public Class fMain
                 Dim text As String = File.ReadAllText(dlg.FileName)
                 LoadOverlay(text)                    ' regions, plus the units and beacons/walls/markers for context
                 currentPlacementFile = dlg.FileName  ' so Save Mission / Ctrl+S targets this file
+                currentMissionScript = Nothing
+                UpdateMissionLabel()
                 If mnuMissionProps IsNot Nothing Then mnuMissionProps.Enabled = True
                 RefreshRegionList()
                 RefreshUnitList()
@@ -1631,6 +1661,7 @@ Partial Public Class fMain
         InvalidateMap()
     End Sub
 
+    ' Whether two paths name the same file (full paths, any case).
     Private Function SamePath(a As String, b As String) As Boolean
         If String.IsNullOrEmpty(a) OrElse String.IsNullOrEmpty(b) Then Return False
         Try
@@ -1792,13 +1823,13 @@ Partial Public Class fMain
         {"MeteorDefense", New Size(2, 2)}, {"GuardPost", New Size(1, 1)}, {"LightTower", New Size(1, 1)},
         {"Tube", New Size(1, 1)}, {"Wall", New Size(1, 1)}, {"LavaWall", New Size(1, 1)}, {"MicrobeWall", New Size(1, 1)}}
 
-    ' Footprint (tiles) for a type. Unknown / vehicles -> 1x1.
     ' Structures the game makes without a dozed border (building.txt's Border column is N): power plants, mines,
     ' light towers, tubes and walls. Every other structure gets a one-tile ring of bulldozed ground around it.
     Private Shared ReadOnly noBorderTypes As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
         "Tokamak", "MHDGenerator", "GeothermalPlant", "SolarPowerArray", "LightTower",
         "MagmaWell", "CommonOreMine", "RareOreMine", "Tube", "Wall", "LavaWall", "MicrobeWall"}
 
+    ' Whether the game clears a dozed border around this type: a structure not in noBorderTypes.
     Private Function HasDozedBorder(unitType As String) As Boolean
         Return Not String.IsNullOrEmpty(unitType) AndAlso buildingFootprints.ContainsKey(unitType) AndAlso
                Not noBorderTypes.Contains(unitType)
@@ -1827,6 +1858,7 @@ Partial Public Class fMain
         End Using
     End Sub
 
+    ' Footprint (tiles) for a type. Unknown / vehicles -> 1x1.
     Private Function FootprintOf(unitType As String) As Size
         Dim s As Size
         If Not String.IsNullOrEmpty(unitType) AndAlso buildingFootprints.TryGetValue(unitType, s) Then Return s
@@ -1998,6 +2030,7 @@ Partial Public Class fMain
         Return True
     End Function
 
+    ' In unit mode: drag the grabbed unit to the tile under the cursor.
     Public Sub UnitMouseMove(e As MouseEventArgs)
         If Not unitMode OrElse Not unitDragging Then Return
         If unitDragIndex < 0 OrElse unitDragIndex >= unitList.Count Then Return
@@ -2006,6 +2039,7 @@ Partial Public Class fMain
         InvalidateMap()
     End Sub
 
+    ' In unit mode: drop the dragged unit.
     Public Sub UnitMouseUp(e As MouseEventArgs)
         If Not unitMode OrElse Not unitDragging Then Return
         unitDragging = False
@@ -2013,6 +2047,7 @@ Partial Public Class fMain
         InvalidateMap()
     End Sub
 
+    ' The index of the topmost unit on the map whose footprint covers 0-based tile (tx, ty), or -1.
     Private Function UnitAtTile(tx As Integer, ty As Integer) As Integer
         For i As Integer = unitList.Count - 1 To 0 Step -1
             If Not unitList(i).HasAt Then Continue For
@@ -2023,6 +2058,7 @@ Partial Public Class fMain
         Return -1
     End Function
 
+    ' Fill the units list (and its header count) from unitList, keeping the selection.
     Private Sub RefreshUnitList()
         If lblUnitsHeader IsNot Nothing Then
             lblUnitsHeader.Text = "Units (" & unitList.Count & ")   place mode: click = add, drag = move"
@@ -2038,6 +2074,7 @@ Partial Public Class fMain
         If keep >= 0 AndAlso keep < lstUnits.Items.Count Then lstUnits.SelectedIndex = keep
     End Sub
 
+    ' Delete the selected unit (PlacementText.DeleteUnit keeps a heading comment above it).
     Private Sub DeleteUnit_Click(sender As Object, e As EventArgs)
         Dim i As Integer = If(lstUnits IsNot Nothing, lstUnits.SelectedIndex, -1)
         If i < 0 OrElse i >= unitList.Count Then Return
@@ -2046,6 +2083,7 @@ Partial Public Class fMain
         InvalidateMap()
     End Sub
 
+    ' Delete every unit, last first, so the comments between them are handled as for single deletes.
     Private Sub ClearUnits_Click(sender As Object, e As EventArgs)
         If unitList.Count = 0 Then Return
         If MessageBox.Show("Clear all units?", "Confirm", MessageBoxButtons.YesNo, MessageBoxIcon.Question) = DialogResult.Yes Then
@@ -2057,6 +2095,7 @@ Partial Public Class fMain
         End If
     End Sub
 
+    ' Write the units table into a placement file the user picks (its units table is replaced, the rest kept).
     Private Sub SaveUnits_Click(sender As Object, e As EventArgs)
         Using dlg As New OpenFileDialog()
             dlg.Title = "Save units into a placement.lua (its units table is replaced)"

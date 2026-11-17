@@ -284,7 +284,7 @@ void ApplyUnits(sol::table& luaUnits) {
 
     MapID weapon = MapID::None;
     sol::optional<std::string> weaponName = u["weapon"];
-    if (weaponName) weapon = MapIdFromName(*weaponName);
+    if (weaponName) weapon = WeaponFor(type, MapIdFromName(*weaponName));   // a Guard Post's Starflare is its turret's
 
     const UnitDirection dir = DirFromName(Field<std::string>(u, "direction", "East"));
     const bool lights = Field<bool>(u, "lights", true);
@@ -313,7 +313,7 @@ void ApplyUnits(sol::table& luaUnits) {
       const MapID kit = MapIdFromName(*kitName);
       if (kit != MapID::None) {
         sol::optional<std::string> topping = u["kit_topping"];
-        unit.SetCargo(kit, topping ? MapIdFromName(*topping) : MapID::None);
+        unit.SetCargo(kit, topping ? WeaponFor(kit, MapIdFromName(*topping)) : MapID::None);
       } else {
         LOG(WARNING) << "placement: unknown kit '" << *kitName << "' (ignored)";
       }

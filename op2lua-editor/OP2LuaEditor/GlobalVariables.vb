@@ -8,7 +8,7 @@ Module GlobalVariables
 
     ' Application info
     Public Const ApplicationBuild As String = "0024"
-    Public Const ApplicationVersion As String = "0.7.5"
+    Public Const ApplicationVersion As String = "0.7.6"
     Public Const ApplicationName As String = "OP2LuaEditor"
     Public Const ApplicationDescription As String = "A tool for working with .lua regions."
     Public Const ApplicationWebsite As String = "https://github.com/leviathan400/OP2LuaSDK"
