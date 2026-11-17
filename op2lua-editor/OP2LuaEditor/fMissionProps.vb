@@ -1,7 +1,8 @@
 ' fMissionProps.vb
 '
 ' Dialog for editing an OP2Lua mission's top-level metadata (name, map, tech file, type, max tech
-' level, players). Used both by Mission > Properties (edit an open mission) and Mission > New Mission
+' level, players). Type is the game's mission type: Colony, Tutorial, AutoDemo, or a multiplayer type (Multi...),
+' which lists the mission in the multiplayer lobby; op2lua-newmission's --type names (LastOneStanding) are taken too. Used both by Mission > Properties (edit an open mission) and Mission > New Mission
 ' (seed a fresh one). The layout lives in fMissionProps.Designer.vb so it opens in the VS designer;
 ' this file only holds the in/out values and the event handlers.
 '
@@ -53,6 +54,13 @@ Public Class fMissionProps
         End If
         If String.IsNullOrWhiteSpace(txtMap.Text) Then
             MessageBox.Show(Me, "A map must be selected.", "Mission Properties", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Me.DialogResult = DialogResult.None
+            Return
+        End If
+        ' The type goes into the mission DLL's DescBlock, so it must be one OP2 has.
+        If PlacementText.MissionTypeValue(cboType.Text) = 0 Then
+            MessageBox.Show(Me, "Type must be one of: " & String.Join(", ", cboType.Items.Cast(Of Object)()) & ".",
+                            "Mission Properties", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Me.DialogResult = DialogResult.None
             Return
         End If

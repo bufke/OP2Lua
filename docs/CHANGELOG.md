@@ -3,6 +3,27 @@
 All notable changes to OP2Lua (the engine: `OP2LuaCore.dll`, the mission stub, the editor and tools).
 For the author-facing SDK, see the OP2LuaSDK changelog.
 
+## [0.7.5] - 2026-11-17
+
+The full list is in CHANGES.md under [0.7.5].
+
+### Added
+
+- **Multiplayer missions:** `op2lua-newmission --type` (Land Rush, Space Race, Resource Race, Midas, Last One
+  Standing), the lobby's settings, the game's own triggers and victory conditions, `players[]` for every player.
+- **Bindings for the stock missions' setups:** the game's AI groups (`ai.*`), time and research triggers, map edits
+  (`game.tile`/`set_tile`, `initial_set_tile`, `set_cell_type`), campaign triggers and unit calls, placement beacons
+  with `after = n`, raw locations, `player.ore_capacity` / `rare_ore_capacity`, and read-only AI queries.
+- **OP2LuaEditor 0.7.5:** a lossless placement save, the mission DLL's type and player count, beacons, walls and
+  markers on the map, dozed borders, Test in OP2 (F5) through op2launcher, the selected tile, and the game's
+  OP2LuaCore.dll version in the status bar.
+
+### Fixed
+
+- `region:center()` in author coordinates; `unit.progress` nil when nothing is made; `game.footprint` /
+  `find_build_site` nil for a non-structure; `player:default_group()` as the game exports it; `game.rand(0)` draws
+  as the game does; points off the map aren't wrapped onto it.
+
 ## [0.7.0] - 2026-11-05
 
 ### Changed

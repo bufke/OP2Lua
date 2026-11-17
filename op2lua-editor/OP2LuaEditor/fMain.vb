@@ -57,7 +57,9 @@ Public Class fMain
     Private statusStrip As New StatusStrip()                ' Status bar (bottom of form)
     Private lblToolStripMapName As New ToolStripStatusLabel()
     Private lblToolStripMapPath As New ToolStripStatusLabel()
-    Private lblToolStripCoordinates As New ToolStripStatusLabel()
+    Private lblToolStripCoordinates As New ToolStripStatusLabel()   ' the tile under the cursor
+    Private lblToolStripSelected As New ToolStripStatusLabel()      ' the selected (clicked) tile
+    Private lblTileContents As New Label()                          ' side panel: what is on the selected tile
 #End Region
 
 #Region "Enumerations"
@@ -131,6 +133,17 @@ Public Class fMain
         Debug.WriteLine(ApplicationName & " - Version: " & ApplicationVersion & ".0")
         ShowLibraries()
 
+        ' Settings are kept per assembly version: after a version change, carry the previous version's over
+        ' (the game folder, working folder, ...) instead of asking for them again.
+        If String.IsNullOrEmpty(My.Settings.OP2Path) Then
+            Try
+                My.Settings.Upgrade()
+                If Not String.IsNullOrEmpty(My.Settings.OP2Path) Then My.Settings.Save()
+            Catch ex As Exception
+                Debug.WriteLine("Settings upgrade: " & ex.Message)
+            End Try
+        End If
+
         ' Initialize UI
         InitializeUI()
 
@@ -139,6 +152,7 @@ Public Class fMain
 
         ' Add the OP2Lua region-editing layer (menu + regions list + map overlay)
         SetupRegionsUI()
+        UpdateCoreLabel()          ' which OP2LuaCore.dll the game folder has
 
         ' Check if OP2 path is set
         If String.IsNullOrEmpty(My.Settings.OP2Path) Then
@@ -158,7 +172,10 @@ Public Class fMain
             Dim filePath = args(1)
 
             ' Check if the file exists
-            If File.Exists(filePath) Then
+            If File.Exists(filePath) AndAlso filePath.EndsWith(".lua", StringComparison.OrdinalIgnoreCase) Then
+                ' A mission (<Name>.lua or <Name>.placement.lua): its map with the layout over it
+                OpenMissionFile(filePath)
+            ElseIf File.Exists(filePath) Then
                 ' Try to load the map file
                 If LoadMapFile(filePath) Then
                     Debug.WriteLine(" - Map loaded successfully")
@@ -281,17 +298,30 @@ Public Class fMain
         menuStrip.Items.Add(helpMenu)
 
         ' Status strip setup
+        ' The tile under the cursor first, then the selected tile, the map and its path.
+        lblToolStripCoordinates.Name = "lblCoordinates"
+        lblToolStripCoordinates.Text = "Cursor: -"
+        statusStrip.Items.Add(lblToolStripCoordinates)
+        statusStrip.Items.Add(New ToolStripSeparator())
+
+        lblToolStripSelected.Name = "lblToolStripSelected"
+        lblToolStripSelected.Text = "Selected: -"
+        statusStrip.Items.Add(lblToolStripSelected)
+        statusStrip.Items.Add(New ToolStripSeparator())
+
         lblToolStripMapName.Name = "lblToolStripMapName"
         lblToolStripMapName.Text = ""
         statusStrip.Items.Add(lblToolStripMapName)
+
+        statusStrip.Items.Add(New ToolStripSeparator())
 
         lblToolStripMapPath.Name = "lblToolStripMapPath"
         lblToolStripMapPath.Text = "N/A"
         statusStrip.Items.Add(lblToolStripMapPath)
 
-        lblToolStripCoordinates.Name = "lblCoordinates"
-        lblToolStripCoordinates.Text = "0,0"
-        statusStrip.Items.Add(lblToolStripCoordinates)
+        ' Everything after this spacer sits at the right: the game's OP2LuaCore.dll (added by UpdateCoreLabel).
+        statusStrip.Items.Add(New ToolStripStatusLabel() With {.Name = "lblToolStripSpacer", .Spring = True})
+        statusStrip.Items.Add(New ToolStripSeparator())
 
         ' Map panel setup
         pnlMap.Name = "pnlMap"
@@ -312,7 +342,7 @@ Public Class fMain
         ' Properties panel setup
         pnlProperties.Name = "pnlProperties"
         pnlProperties.Dock = DockStyle.Right
-        pnlProperties.Width = 240
+        pnlProperties.Width = 320
         pnlProperties.BackColor = SystemColors.Control
 
         Dim lblPropertiesTitle As New Label()
@@ -388,8 +418,9 @@ Public Class fMain
 
         '8  lblCoordinates'
         lblCoordinates.Name = "lblCoordinates"
-        lblCoordinates.Text = "Coordinates: N/A"
+        lblCoordinates.Text = "Selected tile: none (click the map)"
         lblCoordinates.AutoSize = True
+        lblCoordinates.Font = New Font(lblCoordinates.Font, FontStyle.Bold)
         lblCoordinates.Location = New Point(10, yPos + 40)
         propertyContainer.Controls.Add(lblCoordinates)
 
@@ -400,11 +431,20 @@ Public Class fMain
         lblCellType.Location = New Point(10, yPos + 60)
         propertyContainer.Controls.Add(lblCellType)
 
+        ' What the placement has on the selected tile (units, beacons, walls, markers, regions), up to 4 lines
+        lblTileContents.Name = "lblTileContents"
+        lblTileContents.Text = ""
+        lblTileContents.AutoSize = True
+        lblTileContents.MaximumSize = New Size(300, 64)
+        lblTileContents.ForeColor = SystemColors.GrayText
+        lblTileContents.Location = New Point(10, yPos + 80)
+        propertyContainer.Controls.Add(lblTileContents)
+
         '10  lblZoomLevel
         lblZoomLevel.Name = "lblZoomLevel"
         lblZoomLevel.Text = "Zoom Level: N/A"
         lblZoomLevel.AutoSize = True
-        lblZoomLevel.Location = New Point(10, yPos + 120)
+        lblZoomLevel.Location = New Point(10, yPos + 160)
         propertyContainer.Controls.Add(lblZoomLevel)
 
         ' Add Reset Zoom button next to Zoom Level label
@@ -621,7 +661,8 @@ Public Class fMain
         lblZoomLevel.Text = "Zoom Level: 100%"
 
         ' Update the coordinates in status bar
-        lblToolStripCoordinates.Text = "Coordinates: 0, 0"
+        lblToolStripCoordinates.Text = "Cursor: -"
+        lblToolStripSelected.Text = "Selected: -"
     End Sub
 
     ''' <summary>
@@ -686,7 +727,9 @@ Public Class fMain
             Text = ApplicationName
             lblToolStripMapName.Text = ""
             lblToolStripMapPath.Text = ""
-            lblToolStripCoordinates.Text = "0,0"
+            lblToolStripCoordinates.Text = "Cursor: -"
+            lblToolStripSelected.Text = "Selected: -"
+            lblTileContents.Text = ""
 
             lblMapName.Text = "Map Name: N/A"
             lblMapSize.Text = "Map Size: N/A"
@@ -695,7 +738,7 @@ Public Class fMain
             lblTileset.Text = "Tileset: N/A"
             lblTilesetImage.Text = "Image Index: N/A"
             lblMappingIndex.Text = "Mapping Index: N/A"
-            lblCoordinates.Text = "Coordinates: N/A"
+            lblCoordinates.Text = "Selected tile: none (click the map)"
             lblCellType.Text = "Cell Type: N/A"
             lblZoomLevel.Text = "Zoom Level: N/A"
 
@@ -769,6 +812,7 @@ Public Class fMain
     ''' </summary>
     Private Sub Settings_Click(sender As Object, e As EventArgs)
         ShowSettingsDialog()
+        UpdateCoreLabel()          ' the game folder may have changed
     End Sub
 
     ''' <summary>
@@ -1010,204 +1054,42 @@ Public Class fMain
         mapBitmap = New Bitmap(width, height)
 
         ' Render the map based on current render mode
+        RenderAllTiles()
+    End Sub
+
+    ''' <summary>
+    ''' Renders every tile of the map in the current render mode, through the same per-tile renderers
+    ''' UpdateSingleTile uses, so a tile looks the same drawn alone or with the rest of the map.
+    ''' </summary>
+    Private Sub RenderAllTiles()
+        Using g As Graphics = Graphics.FromImage(mapBitmap)
+            g.Clear(System.Drawing.Color.Black)
+            For y As Integer = 0 To currentMap.HeightInTiles() - 1
+                For x As Integer = 0 To currentMap.WidthInTiles() - 1
+                    RenderTile(g, x, y)
+                Next
+            Next
+        End Using
+    End Sub
+
+    ''' <summary>
+    ''' Renders one tile in the current render mode onto the map bitmap's graphics.
+    ''' </summary>
+    Private Sub RenderTile(g As Graphics, x As Integer, y As Integer)
         Select Case currentRenderMode
             Case RenderMode.GameMap
-                RenderGameMap()
+                RenderSingleTileGameMap(g, x, y)
             Case RenderMode.CellTypeOverlay
-                RenderCellTypeOverlay()
+                RenderSingleTileGameMap(g, x, y)              ' base layer
+                RenderSingleTileCellTypeOverlay(g, x, y)      ' translucent cell-type colour
             Case RenderMode.CellTypeOverlayAll
-                RenderCellTypeOverlayAll()
+                RenderSingleTileGameMap(g, x, y)              ' base layer
+                RenderSingleTileCellTypeOverlayAll(g, x, y)   ' cell-type label
             Case RenderMode.CellTypeBasic
-                RenderCellTypeBasic()
+                RenderSingleTileCellTypeBasic(g, x, y)
             Case RenderMode.CellTypeAll
-                RenderCellTypeAll()
+                RenderSingleTileCellTypeAll(g, x, y)
         End Select
-    End Sub
-
-    ''' <summary>
-    ''' Renders map in GameMap mode (actual tileset graphics)
-    ''' </summary>
-    Private Sub RenderGameMap()
-        Using g As Graphics = Graphics.FromImage(mapBitmap)
-            ' Draw background
-            g.Clear(System.Drawing.Color.Black)
-
-            ' Draw actual tileset images from the game files
-            For y As Integer = 0 To currentMap.HeightInTiles() - 1
-                For x As Integer = 0 To currentMap.WidthInTiles() - 1
-                    ' Try to get the tile image
-                    Dim tilesetIndex As Integer = currentMap.GetTilesetIndex(x, y)
-                    Dim imageIndex As Integer = currentMap.GetImageIndex(x, y)
-
-                    ' Check if we have valid indices
-                    If tilesetIndex >= 0 AndAlso tilesetIndex < currentMap.tilesetSources.Count Then
-                        Dim tilesetName As String = currentMap.tilesetSources(tilesetIndex).tilesetFilename
-
-                        ' Check if we have this tileset loaded
-                        If tilesetImages.ContainsKey(tilesetName) Then
-                            Dim tileList As List(Of Bitmap) = tilesetImages(tilesetName)
-
-                            ' Check if the image index is valid
-                            If imageIndex >= 0 AndAlso imageIndex < tileList.Count Then
-                                ' Draw the actual game tile image
-                                g.DrawImage(tileList(imageIndex), x * 32, y * 32)
-                                Continue For
-                            End If
-                        End If
-                    End If
-
-                    ' If we get here, we couldn't find the image - draw a fallback
-                    Dim cellType As CellType = currentMap.GetCellType(x, y)
-                    Dim tileColor As System.Drawing.Color = GetColorForCellType(cellType)
-                    g.FillRectangle(New SolidBrush(tileColor), x * 32, y * 32, 32, 32)
-                    g.DrawRectangle(Pens.DarkGray, x * 32, y * 32, 32, 32)
-                Next
-            Next
-        End Using
-    End Sub
-
-    ''' <summary>
-    ''' Renders map in CellTypeOverlay mode (game map with semi-transparent cell type overlay)
-    ''' </summary>
-    Private Sub RenderCellTypeOverlay()
-        ' First render the game map as the base layer
-        RenderGameMap()
-
-        ' Now overlay the cell types with transparency
-        Using g As Graphics = Graphics.FromImage(mapBitmap)
-            ' Set up for transparency
-            Dim colorMatrix As New Drawing.Imaging.ColorMatrix()
-            colorMatrix.Matrix33 = 0.45F  ' Set alpha/transparency to 45%
-
-            Dim imgAttributes As New Drawing.Imaging.ImageAttributes()
-            imgAttributes.SetColorMatrix(colorMatrix, Drawing.Imaging.ColorMatrixFlag.Default, Drawing.Imaging.ColorAdjustType.Bitmap)
-
-            ' Draw semi-transparent cell type colors over each tile
-            For y As Integer = 0 To currentMap.HeightInTiles() - 1
-                For x As Integer = 0 To currentMap.WidthInTiles() - 1
-                    ' Get tile information
-                    Dim cellType As CellType = currentMap.GetCellType(x, y)
-
-                    ' Get a color that indicates passability clearly
-                    Dim overlayColor As System.Drawing.Color = GetOverlayColorForCellType(cellType)
-
-                    ' Create a single-use bitmap for the colored overlay
-                    Using overlayBitmap As New Bitmap(32, 32)
-                        Using overlayG As Graphics = Graphics.FromImage(overlayBitmap)
-                            overlayG.FillRectangle(New SolidBrush(overlayColor), 0, 0, 32, 32)
-                        End Using
-
-                        ' Draw the colored overlay with transparency
-                        g.DrawImage(overlayBitmap,
-                                   New Rectangle(x * 32, y * 32, 32, 32),  ' Destination rectangle
-                                   0, 0, 32, 32,                           ' Source rectangle
-                                   GraphicsUnit.Pixel,
-                                   imgAttributes)
-                    End Using
-                Next
-            Next
-        End Using
-    End Sub
-
-    ''' <summary>
-    ''' Renders map in CellTypeOverlayAll mode (game map with cell type labels)
-    ''' </summary>
-    Private Sub RenderCellTypeOverlayAll()
-        ' First render the game map as the base layer
-        RenderGameMap()
-
-        ' Now overlay cell type labels with colors based on cell type
-        Using g As Graphics = Graphics.FromImage(mapBitmap)
-            ' Draw text labels for each tile
-            For y As Integer = 0 To currentMap.HeightInTiles() - 1
-                For x As Integer = 0 To currentMap.WidthInTiles() - 1
-                    ' Get tile information
-                    Dim cellType As CellType = currentMap.GetCellType(x, y)
-
-                    ' Get the abbreviation and color for this cell type
-                    Dim labelInfo As Tuple(Of String, System.Drawing.Color) = GetCellTypeLabel(cellType)
-                    Dim label As String = labelInfo.Item1
-                    Dim textColor As System.Drawing.Color = labelInfo.Item2
-
-                    ' Draw text label at tile center
-                    Using font As New Font("Arial", 7, FontStyle.Bold)
-                        Dim textSize As SizeF = g.MeasureString(label, font)
-                        Dim xPos As Single = x * 32 + (32 - textSize.Width) / 2
-                        Dim yPos As Single = y * 32 + (32 - textSize.Height) / 2
-
-                        ' Add dark outline for better readability
-                        ' Draw text shadow with slight offset in all directions
-                        For offsetX As Integer = -1 To 1
-                            For offsetY As Integer = -1 To 1
-                                If Not (offsetX = 0 AndAlso offsetY = 0) Then ' Skip the center position
-                                    g.DrawString(label, font, Brushes.Black, xPos + offsetX, yPos + offsetY)
-                                End If
-                            Next
-                        Next
-
-                        ' Draw actual text in the correct color
-                        g.DrawString(label, font, New SolidBrush(textColor), xPos, yPos)
-                    End Using
-                Next
-            Next
-        End Using
-    End Sub
-
-    ''' <summary>
-    ''' Renders map in CellTypeBasic mode (simplified cell type coloring)
-    ''' </summary>
-    Private Sub RenderCellTypeBasic()
-        Using g As Graphics = Graphics.FromImage(mapBitmap)
-            ' Draw background
-            g.Clear(System.Drawing.Color.Black)
-
-            ' Draw tiles with basic coloring
-            For y As Integer = 0 To currentMap.HeightInTiles() - 1
-                For x As Integer = 0 To currentMap.WidthInTiles() - 1
-                    ' Get tile information
-                    Dim cellType As CellType = currentMap.GetCellType(x, y)
-                    Dim tileColor As System.Drawing.Color = GetColorForCellType(cellType)
-
-                    ' Draw tile
-                    g.FillRectangle(New SolidBrush(tileColor), x * 32, y * 32, 32, 32)
-                    g.DrawRectangle(Pens.DarkGray, x * 32, y * 32, 32, 32)
-                Next
-            Next
-        End Using
-    End Sub
-
-    ''' <summary>
-    ''' Renders map in CellTypeAll mode (detailed cell type coloring with text)
-    ''' </summary>
-    Private Sub RenderCellTypeAll()
-        Using g As Graphics = Graphics.FromImage(mapBitmap)
-            ' Draw background
-            g.Clear(System.Drawing.Color.Black)
-
-            ' Draw tiles with detailed coloring
-            For y As Integer = 0 To currentMap.HeightInTiles() - 1
-                For x As Integer = 0 To currentMap.WidthInTiles() - 1
-                    ' Get tile information
-                    Dim cellType As CellType = currentMap.GetCellType(x, y)
-                    Dim tileColor As System.Drawing.Color = GetDetailedColorForCellType(cellType)
-
-                    ' Draw tile
-                    g.FillRectangle(New SolidBrush(tileColor), x * 32, y * 32, 32, 32)
-                    g.DrawRectangle(Pens.DarkGray, x * 32, y * 32, 32, 32)
-
-                    ' Add cell type text for better visibility (optional)
-                    Using font As New Font("Arial", 7)
-                        Dim brush As New SolidBrush(System.Drawing.Color.White)
-                        ' Only use cell type name's first 6 characters to fit within tile
-                        Dim typeName As String = cellType.ToString()
-                        If typeName.Length > 6 Then
-                            typeName = typeName.Substring(0, 6)
-                        End If
-                        g.DrawString(typeName, font, brush, x * 32 + 2, y * 32 + 12)
-                    End Using
-                Next
-            Next
-        End Using
     End Sub
 
     ''' <summary>
@@ -1231,18 +1113,14 @@ Public Class fMain
         If showGrid AndAlso currentMap IsNot Nothing Then
             ' Create a thin pen for grid lines
             Using gridPen As New Pen(System.Drawing.Color.Black, 1)
-                ' Calculate tile size based on zoom level
-                Dim tileSize As Integer = CInt(32 * zoomLevel)
-
-                ' Draw vertical grid lines
+                ' Each line at its tile edge's own rounded pixel (TileEdgeX/Y): a whole-pixel tile size times
+                ' the tile number drifts off the map at zooms like 10% (3.2 px a tile).
                 For x As Integer = 0 To currentMap.WidthInTiles()
-                    Dim xPos As Integer = offsetX + (x * tileSize)
+                    Dim xPos As Integer = TileEdgeX(x)
                     e.Graphics.DrawLine(gridPen, xPos, offsetY, xPos, offsetY + scaledHeight)
                 Next
-
-                ' Draw horizontal grid lines
                 For y As Integer = 0 To currentMap.HeightInTiles()
-                    Dim yPos As Integer = offsetY + (y * tileSize)
+                    Dim yPos As Integer = TileEdgeY(y)
                     e.Graphics.DrawLine(gridPen, offsetX, yPos, offsetX + scaledWidth, yPos)
                 Next
             End Using
@@ -1252,11 +1130,9 @@ Public Class fMain
         If currentTileX >= 0 AndAlso currentTileY >= 0 AndAlso
            currentTileX < currentMap.WidthInTiles() AndAlso currentTileY < currentMap.HeightInTiles() Then
 
-            Dim selX As Integer = CInt(currentTileX * 32 * zoomLevel) + offsetX
-            Dim selY As Integer = CInt(currentTileY * 32 * zoomLevel) + offsetY
-            Dim selSize As Integer = CInt(32 * zoomLevel)
-
-            e.Graphics.DrawRectangle(New Pen(System.Drawing.Color.White, 2), selX, selY, selSize, selSize)
+            Using selPen As New Pen(System.Drawing.Color.White, 2)
+                e.Graphics.DrawRectangle(selPen, TilesToScreenRect(currentTileX, currentTileY, currentTileX, currentTileY))
+            End Using
         End If
 
         ' Draw OP2Lua mission regions on top of the map
@@ -1275,29 +1151,15 @@ Public Class fMain
 
         ' Update just the changed tile based on current render mode
         Using g As Graphics = Graphics.FromImage(mapBitmap)
-            Select Case currentRenderMode
-                Case RenderMode.GameMap
-                    RenderSingleTileGameMap(g, x, y)
-                Case RenderMode.CellTypeOverlay
-                    RenderSingleTileGameMap(g, x, y)  ' Base layer
-                    RenderSingleTileCellTypeOverlay(g, x, y)  ' Overlay
-                Case RenderMode.CellTypeOverlayAll
-                    RenderSingleTileGameMap(g, x, y)  ' Base layer
-                    RenderSingleTileCellTypeOverlayAll(g, x, y)  ' Detailed overlay
-                Case RenderMode.CellTypeBasic
-                    RenderSingleTileCellTypeBasic(g, x, y)
-                Case RenderMode.CellTypeAll
-                    RenderSingleTileCellTypeAll(g, x, y)
-            End Select
+            RenderTile(g, x, y)
         End Using
 
         ' Only invalidate the region that changed
         Dim panel As Control = FindControl("pnlMap")
         If panel IsNot Nothing Then
-            Dim tileX As Integer = CInt(x * 32 * zoomLevel) + offsetX
-            Dim tileY As Integer = CInt(y * 32 * zoomLevel) + offsetY
-            Dim tileSize As Integer = CInt(32 * zoomLevel) + 2  ' +2 for border
-            panel.Invalidate(New Rectangle(tileX, tileY, tileSize, tileSize))
+            Dim r As Rectangle = TilesToScreenRect(x, y, x, y)
+            r.Inflate(2, 2)                                  ' the selection border reaches past the tile
+            panel.Invalidate(r)
         End If
     End Sub
 
@@ -1327,110 +1189,94 @@ Public Class fMain
         End If
 
         ' If we get here, we couldn't find the image - draw a fallback
-        Dim cellType As CellType = currentMap.GetCellType(x, y)
-        Dim tileColor As System.Drawing.Color = GetColorForCellType(cellType)
-        g.FillRectangle(New SolidBrush(tileColor), x * 32, y * 32, 32, 32)
+        FillTile(g, x, y, GetColorForCellType(currentMap.GetCellType(x, y)))
+    End Sub
+
+    ''' <summary>
+    ''' Renders a single tile in CellTypeOverlay mode: the cell type's colour at 45% over the tile (alpha 115, what
+    ''' the old per-tile bitmap drawn through a 0.45 ColorMatrix gave, without the bitmap).
+    ''' </summary>
+    Private Sub RenderSingleTileCellTypeOverlay(g As Graphics, x As Integer, y As Integer)
+        Const overlayAlpha As Integer = 115
+        Dim overlayColor As System.Drawing.Color = GetOverlayColorForCellType(currentMap.GetCellType(x, y))
+        g.FillRectangle(CachedBrush(System.Drawing.Color.FromArgb(overlayAlpha, overlayColor)), x * 32, y * 32, 32, 32)
+    End Sub
+
+    ''' <summary>
+    ''' Renders a single tile in CellTypeOverlayAll mode: the cell type's outlined label, centred.
+    ''' </summary>
+    Private Sub RenderSingleTileCellTypeOverlayAll(g As Graphics, x As Integer, y As Integer)
+        Dim label As Bitmap = CellTypeLabelImage(currentMap.GetCellType(x, y))
+        g.DrawImageUnscaled(label, x * 32 + (32 - label.Width) \ 2, y * 32 + (32 - label.Height) \ 2)
+    End Sub
+
+    ' Brushes by colour, made once and kept: a map renders thousands of tiles in a handful of colours.
+    Private ReadOnly brushCache As New Dictionary(Of Integer, SolidBrush)()
+
+    Private Function CachedBrush(c As System.Drawing.Color) As SolidBrush
+        Dim b As SolidBrush = Nothing
+        If Not brushCache.TryGetValue(c.ToArgb(), b) Then
+            b = New SolidBrush(c)
+            brushCache(c.ToArgb()) = b
+        End If
+        Return b
+    End Function
+
+    ' A tile filled with a flat colour and a grey border (the fallback tile and the cell-type views).
+    Private Sub FillTile(g As Graphics, x As Integer, y As Integer, c As System.Drawing.Color)
+        g.FillRectangle(CachedBrush(c), x * 32, y * 32, 32, 32)
         g.DrawRectangle(Pens.DarkGray, x * 32, y * 32, 32, 32)
     End Sub
 
-    ''' <summary>
-    ''' Renders a single tile in CellTypeOverlay mode
-    ''' </summary>
-    Private Sub RenderSingleTileCellTypeOverlay(g As Graphics, x As Integer, y As Integer)
-        ' Draw semi-transparent overlay
-        Dim cellType As CellType = currentMap.GetCellType(x, y)
-        Dim overlayColor As System.Drawing.Color = GetOverlayColorForCellType(cellType)
+    ' Each cell type's label (its text in its colour, with a 1px black outline) drawn once into a small bitmap and
+    ' reused for every tile: a label is 9 DrawString calls, and the map always draws at 32 px a tile.
+    Private ReadOnly labelCache As New Dictionary(Of CellType, Bitmap)()
+    Private labelFont As Font = Nothing
+    Private smallFont As Font = Nothing
 
-        ' Set up color matrix for transparency
-        Dim colorMatrix As New Drawing.Imaging.ColorMatrix()
-        colorMatrix.Matrix33 = 0.45F  ' Set alpha/transparency to 45%
-
-        Dim imgAttributes As New Drawing.Imaging.ImageAttributes()
-        imgAttributes.SetColorMatrix(colorMatrix, Drawing.Imaging.ColorMatrixFlag.Default, Drawing.Imaging.ColorAdjustType.Bitmap)
-
-        ' Create overlay bitmap
-        Using overlayBitmap As New Bitmap(32, 32)
-            Using overlayG As Graphics = Graphics.FromImage(overlayBitmap)
-                overlayG.FillRectangle(New SolidBrush(overlayColor), 0, 0, 32, 32)
-            End Using
-
-            ' Draw with transparency
-            g.DrawImage(overlayBitmap,
-                   New Rectangle(x * 32, y * 32, 32, 32),  ' Destination rectangle
-                   0, 0, 32, 32,                           ' Source rectangle
-                   GraphicsUnit.Pixel,
-                   imgAttributes)
+    Private Function CellTypeLabelImage(cellType As CellType) As Bitmap
+        Dim bmp As Bitmap = Nothing
+        If labelCache.TryGetValue(cellType, bmp) Then Return bmp
+        If labelFont Is Nothing Then labelFont = New Font("Arial", 7, FontStyle.Bold)
+        Dim info As Tuple(Of String, System.Drawing.Color) = GetCellTypeLabel(cellType)
+        Dim size As SizeF
+        Using measure As New Bitmap(1, 1), mg As Graphics = Graphics.FromImage(measure)
+            size = mg.MeasureString(info.Item1, labelFont)
         End Using
-    End Sub
-
-    ''' <summary>
-    ''' Renders a single tile in CellTypeOverlayAll mode
-    ''' </summary>
-    Private Sub RenderSingleTileCellTypeOverlayAll(g As Graphics, x As Integer, y As Integer)
-        ' Get tile information
-        Dim cellType As CellType = currentMap.GetCellType(x, y)
-
-        ' Get the abbreviation and color for this cell type
-        Dim labelInfo As Tuple(Of String, System.Drawing.Color) = GetCellTypeLabel(cellType)
-        Dim label As String = labelInfo.Item1
-        Dim textColor As System.Drawing.Color = labelInfo.Item2
-
-        ' Draw text label at tile center
-        Using font As New Font("Arial", 7, FontStyle.Bold)
-            Dim textSize As SizeF = g.MeasureString(label, font)
-            Dim xPos As Single = x * 32 + (32 - textSize.Width) / 2
-            Dim yPos As Single = y * 32 + (32 - textSize.Height) / 2
-
-            ' Add dark outline for better readability
-            ' Draw text shadow with slight offset in all directions
-            For offsetX As Integer = -1 To 1
-                For offsetY As Integer = -1 To 1
-                    If Not (offsetX = 0 AndAlso offsetY = 0) Then ' Skip the center position
-                        g.DrawString(label, font, Brushes.Black, xPos + offsetX, yPos + offsetY)
-                    End If
+        bmp = New Bitmap(Math.Max(1, CInt(Math.Ceiling(size.Width)) + 2), Math.Max(1, CInt(Math.Ceiling(size.Height)) + 2))
+        Using lg As Graphics = Graphics.FromImage(bmp)
+            ' ClearType needs an opaque background and fringes on a transparent bitmap; greyscale AA doesn't.
+            lg.TextRenderingHint = Drawing.Text.TextRenderingHint.AntiAliasGridFit
+            For ox As Integer = -1 To 1
+                For oy As Integer = -1 To 1
+                    If ox <> 0 OrElse oy <> 0 Then lg.DrawString(info.Item1, labelFont, Brushes.Black, 1 + ox, 1 + oy)
                 Next
             Next
-
-            ' Draw actual text in the correct color
-            g.DrawString(label, font, New SolidBrush(textColor), xPos, yPos)
+            lg.DrawString(info.Item1, labelFont, CachedBrush(info.Item2), 1, 1)
         End Using
-    End Sub
+        labelCache(cellType) = bmp
+        Return bmp
+    End Function
 
     ''' <summary>
     ''' Renders a single tile in CellTypeBasic mode
     ''' </summary>
     Private Sub RenderSingleTileCellTypeBasic(g As Graphics, x As Integer, y As Integer)
-        ' Get tile information
-        Dim cellType As CellType = currentMap.GetCellType(x, y)
-        Dim tileColor As System.Drawing.Color = GetColorForCellType(cellType)
-
-        ' Draw tile
-        g.FillRectangle(New SolidBrush(tileColor), x * 32, y * 32, 32, 32)
-        g.DrawRectangle(Pens.DarkGray, x * 32, y * 32, 32, 32)
+        FillTile(g, x, y, GetColorForCellType(currentMap.GetCellType(x, y)))
     End Sub
 
     ''' <summary>
     ''' Renders a single tile in CellTypeAll mode
     ''' </summary>
     Private Sub RenderSingleTileCellTypeAll(g As Graphics, x As Integer, y As Integer)
-        ' Get tile information
         Dim cellType As CellType = currentMap.GetCellType(x, y)
-        Dim tileColor As System.Drawing.Color = GetDetailedColorForCellType(cellType)
+        FillTile(g, x, y, GetDetailedColorForCellType(cellType))
 
-        ' Draw tile
-        g.FillRectangle(New SolidBrush(tileColor), x * 32, y * 32, 32, 32)
-        g.DrawRectangle(Pens.DarkGray, x * 32, y * 32, 32, 32)
-
-        ' Add cell type text for better visibility
-        Using font As New Font("Arial", 7)
-            Dim brush As New SolidBrush(System.Drawing.Color.White)
-            ' Only use cell type name's first 6 characters to fit within tile
-            Dim typeName As String = cellType.ToString()
-            If typeName.Length > 6 Then
-                typeName = typeName.Substring(0, 6)
-            End If
-            g.DrawString(typeName, font, brush, x * 32 + 2, y * 32 + 12)
-        End Using
+        ' The cell type's name, its first 6 characters to fit the tile
+        If smallFont Is Nothing Then smallFont = New Font("Arial", 7)
+        Dim typeName As String = cellType.ToString()
+        If typeName.Length > 6 Then typeName = typeName.Substring(0, 6)
+        g.DrawString(typeName, smallFont, Brushes.White, x * 32 + 2, y * 32 + 12)
     End Sub
 
     ''' <summary>
@@ -1443,11 +1289,7 @@ Public Class fMain
 
         ' Update bitmap for the specific tile
         Using g As Graphics = Graphics.FromImage(mapBitmap)
-            Dim cellType As CellType = currentMap.GetCellType(x, y)
-            Dim tileColor As System.Drawing.Color = GetColorForCellType(cellType)
-
-            g.FillRectangle(New SolidBrush(tileColor), x * 32, y * 32, 32, 32)
-            g.DrawRectangle(Pens.DarkGray, x * 32, y * 32, 32, 32)
+            FillTile(g, x, y, GetColorForCellType(currentMap.GetCellType(x, y)))
         End Using
 
         ' Refresh display
@@ -1480,11 +1322,12 @@ Public Class fMain
         lastMouseY = e.Y
 
         ' Update status bar coordinates only when over a valid tile
-        Dim mapX As Integer = CInt((e.X - offsetX) / zoomLevel / 32)
-        Dim mapY As Integer = CInt((e.Y - offsetY) / zoomLevel / 32)
+        ' (Floor, not CInt: CInt rounds, which put the right / lower half of each tile on the next one.)
+        Dim mapX As Integer = MouseToTileX(e.X)
+        Dim mapY As Integer = MouseToTileY(e.Y)
         If mapX >= 0 AndAlso mapY >= 0 AndAlso mapX < currentMap.WidthInTiles() AndAlso mapY < currentMap.HeightInTiles() Then
             If statusStrip IsNot Nothing Then
-                lblToolStripCoordinates.Text = "Coordinates: " & mapX + 1 & ", " & mapY + 1
+                lblToolStripCoordinates.Text = "Cursor: " & mapX + 1 & ", " & mapY + 1
             End If
         End If
 
@@ -1530,6 +1373,18 @@ Public Class fMain
             Return
         End If
 
+        ' A left click selects the tile in every mode (its coordinates go to the status bar and side panel)
+        If e.Button = MouseButtons.Left Then
+            Dim tx As Integer = MouseToTileX(e.X)
+            Dim ty As Integer = MouseToTileY(e.Y)
+            If tx >= 0 AndAlso ty >= 0 AndAlso tx < currentMap.WidthInTiles() AndAlso ty < currentMap.HeightInTiles() Then
+                currentTileX = tx
+                currentTileY = ty
+                UpdatePropertyControls()
+                FindControl("pnlMap").Invalidate()
+            End If
+        End If
+
         ' Region draw mode intercepts left-clicks to create regions (right-click still pans)
         If regionMode AndAlso RegionMouseDown(e) Then
             Return
@@ -1540,25 +1395,7 @@ Public Class fMain
             Return
         End If
 
-        If e.Button = MouseButtons.Left Then
-            ' Calculate tile position
-            Dim mapX As Integer = CInt((e.X - offsetX) / zoomLevel / 32)
-            Dim mapY As Integer = CInt((e.Y - offsetY) / zoomLevel / 32)
-
-            ' Check if coordinates are valid
-            If mapX >= 0 AndAlso mapY >= 0 AndAlso mapX < currentMap.WidthInTiles() AndAlso mapY < currentMap.HeightInTiles() Then
-
-                ' Set as current tile for display in property panel
-                currentTileX = mapX
-                currentTileY = mapY
-
-                ' Update property controls
-                UpdatePropertyControls()
-
-                ' Refresh selection display - we need to redraw the whole map to show the selection rectangle
-                FindControl("pnlMap").Invalidate()
-            End If
-        ElseIf e.Button = MouseButtons.Right Then
+        If e.Button = MouseButtons.Right Then
             ' Start dragging for panning
             isDragging = True
             lastMouseX = e.X
@@ -1943,8 +1780,10 @@ Public Class fMain
             'Get the current CellType
             Dim cellType As CellType = currentMap.GetCellType(currentTileX, currentTileY)
 
-            lblCoordinates.Text = "Coordinates: " & currentTileX + 1 & ", " & currentTileY + 1
+            lblCoordinates.Text = "Selected tile: " & currentTileX + 1 & ", " & currentTileY + 1
             lblCellType.Text = $"Cell Type: {cellType}"
+            lblToolStripSelected.Text = "Selected: " & currentTileX + 1 & ", " & currentTileY + 1
+            lblTileContents.Text = TileContentsText(currentTileX, currentTileY)
 
         Catch ex As Exception
             Debug.WriteLine($"Error in UpdatePropertyControls: {ex.Message}")
@@ -2223,6 +2062,14 @@ Public Class fMain
     ''' </summary>
     Private Sub pnlMap_DragDrop(sender As Object, e As DragEventArgs) Handles pnlMap.DragDrop
         Dim files() As String = CType(e.Data.GetData(DataFormats.FileDrop), String())
+
+        ' A mission .lua opens the mission (its map with the layout over it)
+        Dim mission As String = files.FirstOrDefault(Function(f) IO.File.Exists(f) AndAlso
+                                                                f.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
+        If mission IsNot Nothing Then
+            OpenMissionFile(mission)
+            Return
+        End If
 
         ' Only load the first .map file; discard any others
         Dim file As String = files.FirstOrDefault(Function(f) IO.File.Exists(f) AndAlso

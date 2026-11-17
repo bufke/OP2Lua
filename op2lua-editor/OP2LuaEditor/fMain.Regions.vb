@@ -26,15 +26,28 @@ Partial Public Class fMain
 
     ' ---- state ----
     Private regionList As New List(Of MissionRegion)
-    Private unitList As New List(Of MissionUnit)
+    Private unitsBlock As New PlacementText.UnitsBlock()        ' the units table as read from placement.lua (+ edits)
+    Private mapObjects As New List(Of MissionMapObject)          ' beacons, walls/tubes and markers (shown, not edited)
     Private showUnits As Boolean = True
+    Private showMapObjects As Boolean = True
+
+    Private ReadOnly Property unitList As List(Of MissionUnit)
+        Get
+            Return unitsBlock.Units
+        End Get
+    End Property
     Private regionMode As Boolean = False
     Private regionDrawing As Boolean = False
     Private regionStartTX As Integer, regionStartTY As Integer       ' 0-based tile during drag
     Private regionCurTX As Integer, regionCurTY As Integer
     Private lstRegions As ListBox = Nothing
+    Private lblRegionsHeader As Label = Nothing
+    Private lblUnitsHeader As Label = Nothing
+    Private listsSplit As SplitContainer = Nothing   ' regions above, units below, under the tile info
+    Private Const InfoHeight As Integer = 240        ' side-panel height kept for the tile info above the lists
     Private mnuRegionMode As ToolStripMenuItem = Nothing
     Private mnuShowUnits As ToolStripMenuItem = Nothing
+    Private mnuShowMapObjects As ToolStripMenuItem = Nothing
     Private regionsMenuTop As ToolStripMenuItem = Nothing    ' top-level "Regions" menu (disabled until a map is loaded)
     Private unitsMenuTop As ToolStripMenuItem = Nothing      ' top-level "Units" menu (disabled until a map is loaded)
     Private missionMenuTop As ToolStripMenuItem = Nothing    ' top-level "Mission" menu (always enabled)
@@ -52,14 +65,22 @@ Partial Public Class fMain
     Private unitDragging As Boolean = False
     Private unitDragIndex As Integer = -1
 
-    Private ReadOnly unitTypeChoices As String() = New String() {
+    ' The unit and weapon names OP2Lua's placement takes (src/Placement.cpp MapIdFromName).
+    Private ReadOnly vehicleTypeChoices As String() = New String() {
         "Lynx", "Panther", "Tiger", "Scorpion", "ConVec", "CargoTruck", "RoboMiner", "RoboSurveyor",
-        "RoboDozer", "Earthworker", "Scout", "Spider", "RepairVehicle", "EvacuationTransport",
-        "CommandCenter", "Tokamak", "MHDGenerator", "SolarPowerArray", "Agridome", "StructureFactory",
-        "VehicleFactory", "GuardPost", "CommonOreSmelter", "CommonOreMine", "Tube", "Wall"}
+        "RoboDozer", "GeoCon", "Earthworker", "Scout", "Spider", "RepairVehicle", "EvacuationTransport"}
+    Private ReadOnly structureTypeChoices As String() = New String() {
+        "CommandCenter", "Tokamak", "MHDGenerator", "SolarPowerArray", "GeothermalPlant",
+        "CommonOreMine", "RareOreMine", "MagmaWell", "CommonOreSmelter", "RareOreSmelter", "CommonStorage", "RareStorage",
+        "StructureFactory", "VehicleFactory", "ArachnidFactory", "ConsumerFactory", "Garage", "Spaceport",
+        "BasicLab", "StandardLab", "AdvancedLab", "Observatory",
+        "Residence", "ReinforcedResidence", "AdvancedResidence", "Agridome", "Nursery", "University", "MedicalCenter",
+        "Forum", "RecreationFacility", "DIRT", "RobotCommand", "TradeCenter", "MeteorDefense", "GORF",
+        "GuardPost", "LightTower", "Tube", "Wall", "LavaWall", "MicrobeWall"}
+    ' EnergyCannon is the Scorpion's weapon.
     Private ReadOnly unitWeaponChoices As String() = New String() {
-        "(none)", "Laser", "Microwave", "RailGun", "RPG", "EMP", "Stickyfoam", "ThorsHammer",
-        "ESG", "AcidCloud", "Starflare", "Supernova"}
+        "(none)", "Laser", "Microwave", "RailGun", "RPG", "EMP", "ESG", "Stickyfoam", "ThorsHammer",
+        "AcidCloud", "Starflare", "Supernova", "EnergyCannon"}
 
     ' ---- edit state ----
     Private editOp As EditAction = EditAction.None
@@ -116,6 +137,7 @@ Partial Public Class fMain
         missionMenu.DropDownItems.Add(mnuMissionProps)
         missionMenu.DropDownItems.Add(New ToolStripSeparator())
         mnuTestInOp2 = New ToolStripMenuItem("Test in OP2")
+        mnuTestInOp2.ShortcutKeys = Keys.F5
         mnuTestInOp2.Enabled = False         ' enabled once a mission (placement.lua) is open
         AddHandler mnuTestInOp2.Click, AddressOf TestInOp2_Click
         missionMenu.DropDownItems.Add(mnuTestInOp2)
@@ -139,6 +161,15 @@ Partial Public Class fMain
         mnuShowUnits.Checked = showUnits
         AddHandler mnuShowUnits.Click, AddressOf ShowUnits_Click
         regionsMenu.DropDownItems.Add(mnuShowUnits)
+
+        mnuShowMapObjects = New ToolStripMenuItem("Show Beacons, Walls and Markers")
+        mnuShowMapObjects.CheckOnClick = True
+        mnuShowMapObjects.Checked = showMapObjects
+        AddHandler mnuShowMapObjects.Click, Sub(s, ev)
+                                                showMapObjects = mnuShowMapObjects.Checked
+                                                InvalidateMap()
+                                            End Sub
+        regionsMenu.DropDownItems.Add(mnuShowMapObjects)
         regionsMenu.DropDownItems.Add(New ToolStripSeparator())
 
         Dim mLoad As New ToolStripMenuItem("Load Regions from placement.lua...")
@@ -167,19 +198,20 @@ Partial Public Class fMain
             MainMenuStrip.Items.Insert(insertAt, regionsMenu)
         End If
 
-        ' --- regions list, docked at the bottom of the properties panel ---
+        ' --- regions and units lists: a split filling the side panel below the tile info (drag the bar between) ---
         Dim props As Control = GetPropertiesPanel()
-        Dim lbl As New Label()
-        lbl.Text = "Regions (draw mode: drag = area, click = point)"
-        lbl.Dock = DockStyle.Bottom
-        lbl.Height = 18
-        lbl.TextAlign = ContentAlignment.MiddleLeft
+        listsSplit = New SplitContainer() With {.Orientation = Orientation.Horizontal, .Dock = DockStyle.Bottom,
+                                                .Height = 420, .SplitterWidth = 6, .BorderStyle = BorderStyle.None}
+        props.Controls.Add(listsSplit)
+        AddHandler props.Resize, Sub(sender2, e2) SizeListsSplit(props)
 
+        lblRegionsHeader = ListHeader("Regions")
         lstRegions = New ListBox()
         lstRegions.Name = "lstRegions"
-        lstRegions.Dock = DockStyle.Bottom
-        lstRegions.Height = 150
+        lstRegions.Dock = DockStyle.Fill
         lstRegions.IntegralHeight = False
+        lstRegions.Font = ListFont()
+        lstRegions.HorizontalScrollbar = True
         AddHandler lstRegions.SelectedIndexChanged, AddressOf RegionSelection_Changed
         AddHandler lstRegions.DoubleClick, AddressOf RenameRegion_Click
         AddHandler lstRegions.MouseDown, AddressOf RegionList_MouseDown
@@ -194,8 +226,10 @@ Partial Public Class fMain
         ctx.Items.Add(ctxDelete)
         lstRegions.ContextMenuStrip = ctx
 
-        props.Controls.Add(lstRegions)
-        props.Controls.Add(lbl)
+        listsSplit.Panel1.Controls.Add(lstRegions)
+        listsSplit.Panel1.Controls.Add(lblRegionsHeader)
+        lstRegions.BringToFront()                    ' the Fill control docks last, below the header
+        RefreshRegionList()
 
         SetupUnitsUI()
     End Sub
@@ -407,15 +441,19 @@ Partial Public Class fMain
                 g.DrawRectangle(pen, rect)
             End Using
             If r.Kind = RegionKind.Point Then
-                g.DrawLine(New Pen(col, 1), rect.Left, rect.Top, rect.Right, rect.Bottom)
-                g.DrawLine(New Pen(col, 1), rect.Right, rect.Top, rect.Left, rect.Bottom)
+                Using cross As New Pen(col, 1)
+                    g.DrawLine(cross, rect.Left, rect.Top, rect.Right, rect.Bottom)
+                    g.DrawLine(cross, rect.Right, rect.Top, rect.Left, rect.Bottom)
+                End Using
             End If
 
             ' name label
             Using bg As New SolidBrush(Color.FromArgb(180, Color.Black))
                 Dim sz As SizeF = g.MeasureString(r.Name, Me.Font)
                 g.FillRectangle(bg, rect.Left, rect.Top - sz.Height, sz.Width + 4, sz.Height)
-                g.DrawString(r.Name, Me.Font, New SolidBrush(col), rect.Left + 2, rect.Top - sz.Height)
+                Using nameBrush As New SolidBrush(col)
+                    g.DrawString(r.Name, Me.Font, nameBrush, rect.Left + 2, rect.Top - sz.Height)
+                End Using
             End Using
 
             ' resize handles on the selected rectangle (edit mode)
@@ -429,7 +467,9 @@ Partial Public Class fMain
             End If
         Next
 
-        ' units (placeholders parsed from placement.lua)
+        ' beacons, walls/tubes and markers, then the units over them
+        If showUnits Then DrawDozedBorders(g, Function(tx, ty) TilesToScreenRect(tx, ty, tx, ty))
+        If showMapObjects Then DrawMapObjects(g, Function(tx, ty) TilesToScreenRect(tx, ty, tx, ty), Me.Font)
         DrawUnits(g)
 
         ' in-progress drag rectangle
@@ -495,24 +535,88 @@ Partial Public Class fMain
     End Function
 
     ' tile range (inclusive, 0-based) -> screen rectangle, honoring zoom + pan
+    ' Both corners are rounded tile edges (TileEdgeX/Y), so neighbouring tiles share an edge pixel at any zoom: a
+    ' width rounded on its own could leave a 1px gap or overlap (a darker line under two translucent fills).
     Private Function TilesToScreenRect(t0x As Integer, t0y As Integer, t1x As Integer, t1y As Integer) As System.Drawing.Rectangle
-        Dim sx As Integer = CInt(t0x * 32 * zoomLevel) + offsetX
-        Dim sy As Integer = CInt(t0y * 32 * zoomLevel) + offsetY
-        Dim w As Integer = CInt((t1x - t0x + 1) * 32 * zoomLevel)
-        Dim h As Integer = CInt((t1y - t0y + 1) * 32 * zoomLevel)
-        Return New System.Drawing.Rectangle(sx, sy, w, h)
+        Dim sx As Integer = TileEdgeX(t0x)
+        Dim sy As Integer = TileEdgeY(t0y)
+        Return New System.Drawing.Rectangle(sx, sy, TileEdgeX(t1x + 1) - sx, TileEdgeY(t1y + 1) - sy)
+    End Function
+
+    ' The screen pixel of the left (top) edge of 0-based tile column tx (row ty), where the scaled map draws it.
+    Private Function TileEdgeX(tx As Integer) As Integer
+        Return CInt(Math.Round(tx * 32 * zoomLevel)) + offsetX
+    End Function
+    Private Function TileEdgeY(ty As Integer) As Integer
+        Return CInt(Math.Round(ty * 32 * zoomLevel)) + offsetY
     End Function
 
     ' ===== list management =====
     ' Clear all placed regions and units (called by Close Map) and refresh both list boxes.
     Public Sub ClearMissionData()
         regionList.Clear()
-        unitList.Clear()
+        unitsBlock = New PlacementText.UnitsBlock()
+        mapObjects.Clear()
         RefreshRegionList()
         RefreshUnitList()
     End Sub
 
+    ' A bold header line above a list.
+    Private Function ListHeader(text As String) As Label
+        Return New Label() With {.Text = text, .Dock = DockStyle.Top, .Height = 22, .Padding = New Padding(2, 0, 0, 0),
+                                 .TextAlign = ContentAlignment.MiddleLeft, .Font = New Font(Me.Font, FontStyle.Bold)}
+    End Function
+
+    Private Function ListFont() As Font
+        Return New Font("Segoe UI", 9.0F)
+    End Function
+
+    ' The lists take the side panel's height below the tile info; the split between them starts half way.
+    Private Sub SizeListsSplit(props As Control)
+        If listsSplit Is Nothing Then Return
+        Dim h As Integer = Math.Max(220, props.ClientSize.Height - InfoHeight)
+        If listsSplit.Height = h Then Return
+        Dim share As Double = If(listsSplit.Height > 0, listsSplit.SplitterDistance / CDbl(listsSplit.Height), 0.4)
+        listsSplit.Height = h
+        listsSplit.SplitterDistance = Math.Max(60, Math.Min(h - 60, CInt(h * share)))
+    End Sub
+
+    ' What placement has on 0-based tile (tx, ty): units whose footprint covers it, beacons, walls and markers on
+    ' it, and the regions it is in. One line each kind, for the side panel.
+    Public Function TileContentsText(tx As Integer, ty As Integer) As String
+        Dim lines As New List(Of String)()
+        Dim us As New List(Of String)()
+        For Each u As MissionUnit In unitList
+            If Not u.HasAt Then Continue For
+            Dim t0x, t0y, t1x, t1y As Integer
+            UnitFootprintTiles(u, t0x, t0y, t1x, t1y)
+            If tx >= t0x AndAlso tx <= t1x AndAlso ty >= t0y AndAlso ty <= t1y Then
+                us.Add(u.UnitType & " p" & u.Player & If(String.IsNullOrEmpty(u.Name), "", " " & Chr(34) & u.Name & Chr(34)))
+            End If
+        Next
+        If us.Count > 0 Then lines.Add("Unit: " & String.Join(", ", us))
+        Dim os As New List(Of String)()
+        For Each o As MissionMapObject In mapObjects
+            If LuaToTile(o.X) = tx AndAlso LuaToTile(o.Y) = ty Then
+                Dim what As String = o.ObjType
+                If o.Kind = MapObjectKind.Beacon AndAlso o.ObjType = "MiningBeacon" Then what = o.Ore & " beacon"
+                If o.Kind = MapObjectKind.Marker Then what &= " marker"
+                os.Add(what & If(String.IsNullOrEmpty(o.Name), "", " " & Chr(34) & o.Name & Chr(34)))
+            End If
+        Next
+        If os.Count > 0 Then lines.Add(String.Join(", ", os))
+        Dim rs As New List(Of String)()
+        For Each r As MissionRegion In regionList
+            If TileInRegionLua(r, tx, ty) Then rs.Add(r.Name)
+        Next
+        If rs.Count > 0 Then lines.Add("In region: " & String.Join(", ", rs))
+        Return String.Join(vbCrLf, lines)
+    End Function
+
     Private Sub RefreshRegionList()
+        If lblRegionsHeader IsNot Nothing Then
+            lblRegionsHeader.Text = "Regions (" & regionList.Count & ")   draw mode: drag = area, click = point"
+        End If
         If lstRegions Is Nothing Then Return
         Dim keep As Integer = lstRegions.SelectedIndex
         lstRegions.BeginUpdate()
@@ -620,6 +724,15 @@ Partial Public Class fMain
                     End If
                     If f.MapFile <> oldMap Then
                         If PatchDllAsciiField(bytes, oldMap, f.MapFile) Then patched += 1 Else failed.Add("map")
+                    End If
+                    ' The type and player count OP2 lists the mission under, in the DLL's DescBlock.
+                    If PlacementText.MissionTypeValue(f.MissionTypeName) <> PlacementText.MissionTypeValue(oldType) OrElse
+                       f.PlayersCount <> oldPlayers OrElse f.MaxTech <> oldMaxTech Then
+                        If PlacementText.PatchDescBlock(bytes, PlacementText.MissionTypeValue(f.MissionTypeName), f.PlayersCount, f.MaxTech) Then
+                            patched += 1
+                        Else
+                            failed.Add("DescBlock")
+                        End If
                     End If
                     If patched > 0 Then
                         File.Copy(dllPath, dllPath & ".bak", True)
@@ -801,33 +914,39 @@ Partial Public Class fMain
             End If
             If dlg.ShowDialog() <> DialogResult.OK Then Return
 
-            ' Work out the placement file regardless of which sibling was picked.
-            Dim picked As String = dlg.FileName
-            Dim placementFile As String
-            If picked.ToLowerInvariant().EndsWith(".placement.lua") Then
-                placementFile = picked
-            Else
-                placementFile = picked.Substring(0, picked.Length - ".lua".Length) & ".placement.lua"
-            End If
-
-            If Not File.Exists(placementFile) Then
-                MessageBox.Show("Could not find the placement file:" & vbCrLf & placementFile & vbCrLf & vbCrLf &
-                                "An OP2Lua mission needs a matching <name>.placement.lua beside <name>.lua.",
-                                "Open Mission", MessageBoxButtons.OK, MessageBoxIcon.Error)
-                Return
-            End If
-
-            If Not LoadMission(placementFile) Then Return
-
-            Dim scriptNote As String = If(currentMissionScript Is Nothing, "(no matching mission .lua found)", Path.GetFileName(currentMissionScript))
-            MessageBox.Show("Mission loaded." & vbCrLf & vbCrLf &
-                            "Script:    " & scriptNote & vbCrLf &
-                            "Placement: " & Path.GetFileName(placementFile) & vbCrLf &
-                            "Map:       " & lastLoadedMapName & vbCrLf & vbCrLf &
-                            regionList.Count & " region(s), " & unitList.Count & " unit(s).",
-                            "Open Mission", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            OpenMissionFile(dlg.FileName)
         End Using
     End Sub
+
+    ' Open a mission from either of its files (<Name>.lua or <Name>.placement.lua): File > Open Mission, a file
+    ' dropped on the map, or the command line.
+    Public Function OpenMissionFile(picked As String) As Boolean
+        ' Work out the placement file regardless of which sibling was picked.
+        Dim placementFile As String
+        If picked.ToLowerInvariant().EndsWith(".placement.lua") Then
+            placementFile = picked
+        Else
+            placementFile = picked.Substring(0, picked.Length - ".lua".Length) & ".placement.lua"
+        End If
+
+        If Not File.Exists(placementFile) Then
+            MessageBox.Show("Could not find the placement file:" & vbCrLf & placementFile & vbCrLf & vbCrLf &
+                            "An OP2Lua mission needs a matching <name>.placement.lua beside <name>.lua.",
+                            "Open Mission", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return False
+        End If
+
+        If Not LoadMission(placementFile) Then Return False
+
+        Dim scriptNote As String = If(currentMissionScript Is Nothing, "(no matching mission .lua found)", Path.GetFileName(currentMissionScript))
+        MessageBox.Show("Mission loaded." & vbCrLf & vbCrLf &
+                        "Script:    " & scriptNote & vbCrLf &
+                        "Placement: " & Path.GetFileName(placementFile) & vbCrLf &
+                        "Map:       " & lastLoadedMapName & vbCrLf & vbCrLf &
+                        regionList.Count & " region(s), " & unitList.Count & " unit(s)" & MapObjectSummary() & ".",
+                        "Open Mission", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Return True
+    End Function
 
     ' Core mission loader: given a placement.lua path, derive the script sibling, read+resolve+load its
     ' map, parse the regions/units overlay, and wire up mission state. Shows error dialogs and returns
@@ -876,8 +995,7 @@ Partial Public Class fMain
         If mnuMissionProps IsNot Nothing Then mnuMissionProps.Enabled = True
         If mnuTestInOp2 IsNot Nothing Then mnuTestInOp2.Enabled = True
 
-        regionList = ParseRegions(placementText)
-        unitList = ParseUnits(placementText)
+        LoadOverlay(placementText)
         RefreshRegionList()
         RefreshUnitList()
 
@@ -913,10 +1031,147 @@ Partial Public Class fMain
             Return
         End If
 
-        ' op2launcher resolves the DLL by name from OP2's mission search path (OPU\maps\LUA). The mission
-        ' must be deployed there for the game to find it.
+        ' The game runs the files on disk: pick up changes made to it elsewhere, then offer to save edits first.
+        If Not ReconcileWithDisk() Then Return
+        If MissionHasUnsavedEdits() Then
+            Select Case MessageBox.Show("Save your changes to " & Path.GetFileName(currentPlacementFile) & " before testing?",
+                                        "Test in OP2", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question)
+                Case DialogResult.Yes : SaveMissionToFile(currentPlacementFile)
+                Case DialogResult.Cancel : Return
+            End Select
+        End If
+
+        ' op2launcher boots a mission by DLL name, which the game looks up in its own folders, and OP2LuaCore loads
+        ' the scripts from beside the DLL. A mission kept elsewhere is copied into OPU\maps\LUA first.
+        If Not DeployMission(dir, baseName, dllName) Then Return
         LaunchMissionDll(dllName)
     End Sub
+
+    ' Copy a mission's DLL, script and placement into <OP2>\OPU\maps\LUA (nothing to do when it is already there).
+    ' A file there that differs from the mission's is replaced only after asking: it may be another mission of the
+    ' same name.
+    Private Function DeployMission(dir As String, baseName As String, dllName As String) As Boolean
+        If String.IsNullOrEmpty(My.Settings.OP2Path) Then Return True     ' LaunchMissionDll says what is missing
+        Dim deployDir As String = Path.Combine(My.Settings.OP2Path, "OPU", "maps", "LUA")
+        If SamePath(dir, deployDir) Then Return True
+
+        Dim names As New List(Of String) From {dllName, baseName & ".lua", baseName & ".placement.lua"}
+        Dim copies As New List(Of String)()
+        Dim replaced As New List(Of String)()
+        For Each n As String In names
+            Dim src As String = Path.Combine(dir, n)
+            If Not File.Exists(src) Then Continue For
+            Dim dst As String = Path.Combine(deployDir, n)
+            copies.Add(n)
+            ' A file this editor copied there earlier (this session) is simply updated.
+            If File.Exists(dst) AndAlso Not deployedFiles.Contains(Path.GetFullPath(dst)) AndAlso Not FilesEqual(src, dst) Then
+                replaced.Add(n)
+            End If
+        Next
+        If replaced.Count > 0 Then
+            Dim ask As String = "Test in OP2 copies the mission into:" & vbCrLf & deployDir & vbCrLf & vbCrLf &
+                                "These files there are different and will be replaced:" & vbCrLf & "  " &
+                                String.Join(vbCrLf & "  ", replaced) & vbCrLf & vbCrLf & "Replace them?"
+            If MessageBox.Show(ask, "Test in OP2", MessageBoxButtons.YesNo, MessageBoxIcon.Question) <> DialogResult.Yes Then Return False
+        End If
+        Try
+            Directory.CreateDirectory(deployDir)
+            For Each n As String In copies
+                File.Copy(Path.Combine(dir, n), Path.Combine(deployDir, n), True)
+                deployedFiles.Add(Path.GetFullPath(Path.Combine(deployDir, n)))
+            Next
+        Catch ex As Exception
+            MessageBox.Show("Could not copy the mission into " & deployDir & ":" & vbCrLf & ex.Message,
+                            "Test in OP2", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            Return False
+        End Try
+        Return True
+    End Function
+
+    ' The open placement file's text as the editor last read or wrote it.
+    Private loadedPlacementText As String = Nothing
+
+    ' Before saving over (or testing) the open mission: if its file changed on disk since the editor read it (another
+    ' editor, a converter), reload it when there are no edits here, else ask. False = stop.
+    Private Function ReconcileWithDisk() As Boolean
+        If String.IsNullOrEmpty(currentPlacementFile) OrElse Not File.Exists(currentPlacementFile) OrElse loadedPlacementText Is Nothing Then Return True
+        Dim disk As String = File.ReadAllText(currentPlacementFile)
+        If disk = loadedPlacementText Then Return True
+        If Not MissionHasUnsavedEdits() Then
+            LoadOverlay(disk)
+            InvalidateMap()
+            Return True
+        End If
+        Select Case MessageBox.Show(Path.GetFileName(currentPlacementFile) & " has changed on disk since it was opened, and it has edits here too." &
+                                    vbCrLf & vbCrLf & "Yes: keep the file on disk (reload it; the edits here are dropped)." &
+                                    vbCrLf & "No: keep the edits here (they replace the file's units and regions)." &
+                                    vbCrLf & "Cancel: do nothing.",
+                                    "File Changed", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning)
+            Case DialogResult.Yes
+                LoadOverlay(disk)
+                InvalidateMap()
+                Return True
+            Case DialogResult.No
+                Return True
+            Case Else
+                Return False
+        End Select
+    End Function
+
+    ' Whether the regions or units differ from the open placement file's: the units as the text Save would write,
+    ' the regions by name and corners (Save rewrites their table's layout, so its text isn't compared).
+    Private Function MissionHasUnsavedEdits() As Boolean
+        If String.IsNullOrEmpty(currentPlacementFile) OrElse loadedPlacementText Is Nothing Then Return False
+        Dim text As String = loadedPlacementText
+        ' (A file with no units table and none placed: Save would add an empty one, which isn't an edit.)
+        If (unitsBlock.Found OrElse unitList.Count > 0) AndAlso WriteUnits(text, currentPlacementFile) <> text Then Return True
+        Dim onDisk As List(Of MissionRegion) = PlacementText.ParseRegions(text)
+        If onDisk.Count <> regionList.Count Then Return True
+        For i As Integer = 0 To onDisk.Count - 1
+            If onDisk(i).ToString() <> regionList(i).ToString() Then Return True
+        Next
+        Return False
+    End Function
+
+    ' ===== the game's OP2LuaCore.dll (status bar) =====
+    Private lblToolStripCore As ToolStripStatusLabel = Nothing
+
+    ' Show which OP2LuaCore.dll the game folder has: its version and when it was built (the link time in its PE
+    ' header, which a copy keeps; the version alone doesn't change between builds). Hover for the path. Called at
+    ' start-up and after Settings.
+    Public Sub UpdateCoreLabel()
+        If lblToolStripCore Is Nothing Then
+            lblToolStripCore = New ToolStripStatusLabel() With {.Name = "lblToolStripCore"}
+            statusStrip.Items.Add(lblToolStripCore)
+        End If
+        Dim core As String = If(String.IsNullOrEmpty(My.Settings.OP2Path), "", Path.Combine(My.Settings.OP2Path, "OPU", "OP2LuaCore.dll"))
+        If core = "" OrElse Not File.Exists(core) Then
+            lblToolStripCore.Text = "OP2LuaCore: not installed"
+            lblToolStripCore.ForeColor = Color.Firebrick
+            lblToolStripCore.ToolTipText = If(core = "", "Set the Outpost 2 folder in Settings.", "No " & core & " - OP2Lua missions can't run.")
+            Return
+        End If
+        Dim ver As String = FileVersionInfo.GetVersionInfo(core).FileVersion
+        Dim built As String = ""
+        Try
+            Dim buf() As Byte = File.ReadAllBytes(core)
+            Dim stamp As Integer = BitConverter.ToInt32(buf, BitConverter.ToInt32(buf, &H3C) + 8)   ' COFF TimeDateStamp
+            built = ", built " & DateTimeOffset.FromUnixTimeSeconds(CUInt(stamp)).LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+        Catch ex As Exception
+        End Try
+        lblToolStripCore.Text = "OP2LuaCore " & If(String.IsNullOrEmpty(ver), "?", ver) & built
+        lblToolStripCore.ForeColor = SystemColors.ControlText
+        lblToolStripCore.ToolTipText = core
+    End Sub
+
+    ' Files Test in OP2 has copied into the game this session (full paths, any case).
+    Private ReadOnly deployedFiles As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+
+    Private Function FilesEqual(a As String, b As String) As Boolean
+        Dim fa As New FileInfo(a), fb As New FileInfo(b)
+        If fa.Length <> fb.Length Then Return False
+        Return File.ReadAllBytes(a).SequenceEqual(File.ReadAllBytes(b))
+    End Function
 
     ''' <summary>
     ''' Launches Outpost 2 straight into a mission DLL via op2launcher.exe in
@@ -1034,11 +1289,18 @@ Partial Public Class fMain
                 End If
                 PatchDllAsciiField(bytes, "eden01.map", f.MapFile)
                 PatchDllWideField(bytes, StubDescPlaceholder, f.MissionName)   ' FileDescription (Properties > Details)
+                ' Mission type + player count: OP2 lists the mission by its type (a multiplayer type puts it in the
+                ' lobby) and sizes the game by the player count, both read from the DLL.
+                If Not PlacementText.PatchDescBlock(bytes, PlacementText.MissionTypeValue(f.MissionTypeName), f.PlayersCount, f.MaxTech) Then
+                    MessageBox.Show("The bundled stub has no DescBlock export - it may be the wrong DLL.",
+                                    "New Mission", MessageBoxButtons.OK, MessageBoxIcon.Error)
+                    Return
+                End If
                 File.WriteAllBytes(dllOut, bytes)
 
                 ' Starter lua files.
                 File.WriteAllText(placementOut, NewPlacementSkeleton(base, f.MissionName, f.MapFile, f.Tech, f.MissionTypeName, f.MaxTech, f.PlayersCount))
-                File.WriteAllText(scriptOut, NewMissionSkeleton(base, f.MissionName))
+                File.WriteAllText(scriptOut, NewMissionSkeleton(base, f.MissionName, f.MissionTypeName))
             Catch ex As Exception
                 MessageBox.Show("Could not create mission: " & ex.Message, "New Mission", MessageBoxButtons.OK, MessageBoxIcon.Error)
                 Return
@@ -1048,7 +1310,7 @@ Partial Public Class fMain
             If LoadMission(placementOut) Then
                 Text = ApplicationName & " - " & f.MissionName
                 MessageBox.Show("Created mission """ & f.MissionName & """ in:" & vbCrLf & outDir & vbCrLf & vbCrLf &
-                                base & ".dll   (menu name + map patched)" & vbCrLf &
+                                base & ".dll   (menu name, map, type and players patched)" & vbCrLf &
                                 base & ".lua   (your logic)" & vbCrLf &
                                 base & ".placement.lua   (your layout)" & vbCrLf & vbCrLf &
                                 "Those three files are the mission - copy them where Outpost 2 loads missions to play.",
@@ -1066,12 +1328,14 @@ Partial Public Class fMain
         Return sb.ToString()
     End Function
 
-    ' Locate the bundled stub DLL (copied next to the editor exe at build time).
+    ' Locate the stub DLL: beside the editor (its build output copies it into stub\), or in the SDK's bin\ next to
+    ' the tools\ folder the editor ships in.
     Private Function FindBundledStub() As String
         Dim exeDir As String = Application.StartupPath
         For Each c As String In New String() {
             Path.Combine(exeDir, "stub", "LuaMission.dll"),
-            Path.Combine(exeDir, "LuaMission.dll")}
+            Path.Combine(exeDir, "LuaMission.dll"),
+            Path.GetFullPath(Path.Combine(exeDir, "..", "bin", "LuaMission.dll"))}
             If File.Exists(c) Then Return c
         Next
         Return Nothing
@@ -1087,6 +1351,25 @@ Partial Public Class fMain
         sb.AppendLine("  name = " & q(name) & ", map = " & q(map) & ", tech = " & q(tech) & ", type = " & q(missionType) & ",")
         sb.AppendLine("  max_tech = " & maxTech & ", players_count = " & players & ",")
         sb.AppendLine("")
+        If PlacementText.IsMultiplayerType(missionType) Then
+            ' A multiplayer game: the lobby sets each player's colony, colour and human/AI; a players table would
+            ' override them. players[1..n] exist in the mission script either way.
+            sb.AppendLine("  -- No players table: in a multiplayer game the lobby has already set each player's colony and colour.")
+            sb.AppendLine("")
+            sb.AppendLine("  units = {")
+            sb.AppendLine("    -- What every game starts with (player = 1.." & players & "). Bases that depend on the lobby's")
+            sb.AppendLine("    -- settings (game.initial_units()) are made in on_init instead.")
+            For p As Integer = 1 To players
+                sb.AppendLine("    { type = ""CommandCenter"", player = " & p & ", at = { " & (20 + 12 * (p - 1)) & ", 20 } },")
+            Next
+            sb.AppendLine("  },")
+            sb.AppendLine("")
+            sb.AppendLine("  beacons = {}, walls = {},")
+            sb.AppendLine("  regions = {},")
+            sb.AppendLine("  markers = {},")
+            sb.AppendLine("}")
+            Return sb.ToString()
+        End If
         sb.AppendLine("  players = {")
         sb.AppendLine("    [1] = { colony = ""Eden"", human = true, color = ""Blue"",")
         sb.AppendLine("            resources = { common_ore = 3000, food = 3000, kids = 8, workers = 12, scientists = 6, tech_level = 9 },")
@@ -1115,11 +1398,23 @@ Partial Public Class fMain
         Return sb.ToString()
     End Function
 
-    Private Function NewMissionSkeleton(base As String, name As String) As String
+    Private Function NewMissionSkeleton(base As String, name As String, missionType As String) As String
         Dim sb As New StringBuilder()
         sb.AppendLine("-- " & base & ".lua  -  " & name & "  -  mission logic.")
         sb.AppendLine("-- See docs/API.md for the full API. Edit freely; this is your mission.")
         sb.AppendLine("")
+        If PlacementText.IsMultiplayerType(missionType) Then
+            sb.AppendLine("function on_init()")
+            sb.AppendLine("  -- The lobby's settings: game.initial_units(), game.uses_day_night(), game.uses_morale(),")
+            sb.AppendLine("  -- game.disasters_enabled(), and each player's .difficulty (the resource level).")
+            If PlacementText.MissionTypeValue(missionType) = -8 Then
+                sb.AppendLine("  mission.last_one_standing()   -- the game's own Last One Standing victory, per player")
+            Else
+                sb.AppendLine("  -- Win: this type's victory with trigger.* and mission.victory (docs/API.md, ""Multiplayer missions"").")
+            End If
+            sb.AppendLine("end")
+            Return sb.ToString()
+        End If
         sb.AppendLine("function on_init()")
         sb.AppendLine("  game.message(""" & name & ": destroy the enemy Command Center!"")")
         sb.AppendLine("  game.sound(""NewMissionObjective"")")
@@ -1203,6 +1498,7 @@ Partial Public Class fMain
     ' Regions (currentPlacementFile); if none is set it prompts once with a Save dialog.
     Private Sub SaveMission_Click(sender As Object, e As EventArgs)
         If Not String.IsNullOrEmpty(currentPlacementFile) AndAlso File.Exists(currentPlacementFile) Then
+            If Not ReconcileWithDisk() Then Return
             SaveMissionToFile(currentPlacementFile)
         Else
             SaveMissionAs()
@@ -1231,10 +1527,11 @@ Partial Public Class fMain
         Try
             Dim existed As Boolean = File.Exists(filePath)
             Dim text As String = If(existed, File.ReadAllText(filePath), "return {" & vbCrLf & "}" & vbCrLf)
-            Dim updated As String = ReplaceRegionsBlock(text, EmitRegionsBlock())
-            updated = ReplaceUnitsBlock(updated, EmitUnitsBlock())
+            Dim updated As String = PlacementText.ReplaceTable(text, "regions", EmitRegionsBlock(PlacementText.NewLineOf(text)))
+            updated = WriteUnits(updated, filePath)
             If existed Then File.Copy(filePath, filePath & ".bak", True)
             File.WriteAllText(filePath, updated)
+            ReloadUnitsIfOpen(filePath, updated)
             MessageBox.Show("Saved " & regionList.Count & " region(s) and " & unitList.Count & " unit(s) to " &
                             Path.GetFileName(filePath) & "." & If(existed, vbCrLf & "Backup: " & Path.GetFileName(filePath) & ".bak", ""),
                             "Save Mission", MessageBoxButtons.OK, MessageBoxIcon.Information)
@@ -1251,8 +1548,7 @@ Partial Public Class fMain
             If dlg.ShowDialog() <> DialogResult.OK Then Return
             Try
                 Dim text As String = File.ReadAllText(dlg.FileName)
-                regionList = ParseRegions(text)
-                unitList = ParseUnits(text)          ' also pull units for context
+                LoadOverlay(text)                    ' regions, plus the units and beacons/walls/markers for context
                 currentPlacementFile = dlg.FileName  ' so Save Mission / Ctrl+S targets this file
                 If mnuMissionProps IsNot Nothing Then mnuMissionProps.Enabled = True
                 RefreshRegionList()
@@ -1273,7 +1569,7 @@ Partial Public Class fMain
             If dlg.ShowDialog() <> DialogResult.OK Then Return
             Try
                 Dim text As String = File.ReadAllText(dlg.FileName)
-                Dim updated As String = ReplaceRegionsBlock(text, EmitRegionsBlock())
+                Dim updated As String = PlacementText.ReplaceTable(text, "regions", EmitRegionsBlock(PlacementText.NewLineOf(text)))
                 ' Back up the existing file first: <file>.bak (overwrites a previous backup).
                 Dim backupPath As String = dlg.FileName & ".bak"
                 File.Copy(dlg.FileName, backupPath, True)
@@ -1287,135 +1583,135 @@ Partial Public Class fMain
         End Using
     End Sub
 
-    ' Emit the   regions = { ... }   table text (2-space indented, matching the templates).
-    Private Function EmitRegionsBlock() As String
+    ' Emit the   regions = { ... }   table text (2-space indented, matching the templates), with the file's line ending.
+    Private Function EmitRegionsBlock(nl As String) As String
         Dim sb As New StringBuilder()
         sb.Append("regions = {")
-        sb.Append(vbCrLf)
+        sb.Append(nl)
         For Each r As MissionRegion In regionList
             If r.Kind = RegionKind.Point Then
                 sb.Append("    " & r.Name & " = { " & r.X1 & ", " & r.Y1 & " },")
             Else
                 sb.Append("    " & r.Name & " = { " & r.X1 & ", " & r.Y1 & ", " & r.X2 & ", " & r.Y2 & " },")
             End If
-            sb.Append(vbCrLf)
+            sb.Append(nl)
         Next
         sb.Append("  }")
         Return sb.ToString()
     End Function
 
-    ' Replace an existing   regions = { ... }   block with newBlock. If none exists, insert before the
-    ' final closing brace of the returned table.
-    Private Function ReplaceRegionsBlock(text As String, newBlock As String) As String
-        Dim m As Match = Regex.Match(text, "regions\s*=\s*\{")
-        If m.Success Then
-            Dim braceOpen As Integer = text.IndexOf("{"c, m.Index)
-            Dim closeIdx As Integer = MatchBrace(text, braceOpen)
-            If closeIdx > braceOpen Then
-                Return text.Substring(0, m.Index) & newBlock & text.Substring(closeIdx + 1)
-            End If
-        End If
-        ' no regions block: insert before the last '}' in the file
-        Dim lastBrace As Integer = text.LastIndexOf("}"c)
-        If lastBrace < 0 Then Return text & vbCrLf & newBlock & vbCrLf
-        Return text.Substring(0, lastBrace) & "  " & newBlock & "," & vbCrLf & text.Substring(lastBrace)
+    ' Read the overlay (regions, units, beacons/walls/markers) from placement.lua text.
+    Private Sub LoadOverlay(text As String)
+        loadedPlacementText = text
+        regionList = PlacementText.ParseRegions(text)
+        unitsBlock = PlacementText.ParseUnits(text)
+        mapObjects = PlacementText.ParseMapObjects(text)
+        RefreshRegionList()
+        RefreshUnitList()
+    End Sub
+
+    ' The units table written into a placement file's text. Saving into the file the units were read from also
+    ' renumbers its beacons' `after = n` for the units deleted since (placement makes such a beacon after the n-th
+    ' unit, so the units keep the object ids of the setup it remakes).
+    Private Function WriteUnits(text As String, filePath As String) As String
+        Dim updated As String = PlacementText.ReplaceTable(text, "units", PlacementText.EmitUnits(unitsBlock))
+        If SamePath(filePath, currentPlacementFile) Then updated = PlacementText.FixBeaconAfter(updated, unitsBlock)
+        Return updated
     End Function
 
-    ' Index of the '}' matching the '{' at openIndex (-1 if unbalanced).
-    Private Function MatchBrace(text As String, openIndex As Integer) As Integer
-        Dim depth As Integer = 0
-        For i As Integer = openIndex To text.Length - 1
-            Dim c As Char = text(i)
-            If c = "{"c Then
-                depth += 1
-            ElseIf c = "}"c Then
-                depth -= 1
-                If depth = 0 Then Return i
-            End If
+    ' After saving the open mission, read its units back so the next save starts from what is in the file.
+    Private Sub ReloadUnitsIfOpen(filePath As String, savedText As String)
+        If Not SamePath(filePath, currentPlacementFile) Then Return
+        Dim keep As Integer = If(lstUnits IsNot Nothing, lstUnits.SelectedIndex, -1)
+        loadedPlacementText = savedText
+        unitsBlock = PlacementText.ParseUnits(savedText)
+        mapObjects = PlacementText.ParseMapObjects(savedText)
+        RefreshUnitList()
+        If lstUnits IsNot Nothing AndAlso keep >= 0 AndAlso keep < lstUnits.Items.Count Then lstUnits.SelectedIndex = keep
+        InvalidateMap()
+    End Sub
+
+    Private Function SamePath(a As String, b As String) As Boolean
+        If String.IsNullOrEmpty(a) OrElse String.IsNullOrEmpty(b) Then Return False
+        Try
+            Return String.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase)
+        Catch
+            Return False
+        End Try
+    End Function
+
+    ' ", 12 beacon(s), 40 wall(s)/tube(s), 2 marker(s)" for the load messages ("" when there are none).
+    Private Function MapObjectSummary() As String
+        Dim b, w, m As Integer
+        For Each o As MissionMapObject In mapObjects
+            Select Case o.Kind
+                Case MapObjectKind.Beacon : b += 1
+                Case MapObjectKind.Wall : w += 1
+                Case MapObjectKind.Marker : m += 1
+            End Select
         Next
-        Return -1
+        Dim s As String = ""
+        If b > 0 Then s &= ", " & b & " beacon(s)"
+        If w > 0 Then s &= ", " & w & " wall(s)/tube(s)"
+        If m > 0 Then s &= ", " & m & " marker(s)"
+        Return s
     End Function
 
-    ' Parse   name = { x, y }   (point) and   name = { x1, y1, x2, y2 }   (rect) from a regions block.
-    Private Function ParseRegions(text As String) As List(Of MissionRegion)
-        Dim result As New List(Of MissionRegion)()
-        Dim m As Match = Regex.Match(text, "regions\s*=\s*\{")
-        If Not m.Success Then Return result
-        Dim braceOpen As Integer = text.IndexOf("{"c, m.Index)
-        Dim closeIdx As Integer = MatchBrace(text, braceOpen)
-        If closeIdx <= braceOpen Then Return result
-        Dim inner As String = text.Substring(braceOpen + 1, closeIdx - braceOpen - 1)
-
-        Dim entry As New Regex("([A-Za-z_]\w*)\s*=\s*\{\s*(-?\d+)\s*,\s*(-?\d+)\s*(?:,\s*(-?\d+)\s*,\s*(-?\d+)\s*)?\}")
-        For Each em As Match In entry.Matches(inner)
-            Dim r As New MissionRegion()
-            r.Name = em.Groups(1).Value
-            r.X1 = Integer.Parse(em.Groups(2).Value)
-            r.Y1 = Integer.Parse(em.Groups(3).Value)
-            If em.Groups(4).Success Then
-                r.Kind = RegionKind.Rectangle
-                r.X2 = Integer.Parse(em.Groups(4).Value)
-                r.Y2 = Integer.Parse(em.Groups(5).Value)
-            Else
-                r.Kind = RegionKind.Point
-                r.X2 = r.X1 : r.Y2 = r.Y1
-            End If
-            result.Add(r)
+    ' Draw beacons (a diamond: C common, R rare, ? random ore, V magma vent, F fumarole), walls and tubes (a filled
+    ' tile) and markers (a ring with the marker's name). tileRect gives a 0-based tile's rectangle on g.
+    Private Sub DrawMapObjects(g As Graphics, tileRect As Func(Of Integer, Integer, System.Drawing.Rectangle), font As Font)
+        If mapObjects Is Nothing Then Return
+        For Each o As MissionMapObject In mapObjects
+            If o.Kind <> MapObjectKind.Wall Then Continue For
+            Dim col As Color
+            Select Case o.ObjType
+                Case "Tube" : col = Color.FromArgb(170, 205, 170, 110)
+                Case "LavaWall" : col = Color.FromArgb(190, 230, 90, 30)
+                Case "MicrobeWall" : col = Color.FromArgb(190, 110, 160, 50)
+                Case Else : col = Color.FromArgb(190, 120, 120, 120)
+            End Select
+            Using br As New SolidBrush(col)
+                g.FillRectangle(br, tileRect(LuaToTile(o.X), LuaToTile(o.Y)))
+            End Using
         Next
-        Return result
-    End Function
-
-    ' ===== units (placeholders parsed from the placement.lua "units" table) =====
-
-    ' Parse the units array: each entry has type="X", at={x,y}, optional player=N, name="..."
-    Private Function ParseUnits(text As String) As List(Of MissionUnit)
-        Dim result As New List(Of MissionUnit)()
-        Dim m As Match = Regex.Match(text, "units\s*=\s*\{")
-        If Not m.Success Then Return result
-        Dim braceOpen As Integer = text.IndexOf("{"c, m.Index)
-        Dim closeIdx As Integer = MatchBrace(text, braceOpen)
-        If closeIdx <= braceOpen Then Return result
-        Dim inner As String = text.Substring(braceOpen + 1, closeIdx - braceOpen - 1)
-
-        ' walk depth-1 { ... } entries (each is one unit table)
-        Dim depth As Integer = 0
-        Dim start As Integer = -1
-        For i As Integer = 0 To inner.Length - 1
-            Dim c As Char = inner(i)
-            If c = "{"c Then
-                depth += 1
-                If depth = 1 Then start = i + 1
-            ElseIf c = "}"c Then
-                If depth = 1 AndAlso start >= 0 Then
-                    Dim u As MissionUnit = ParseUnitEntry(inner.Substring(start, i - start))
-                    If u IsNot Nothing Then result.Add(u)
+        For Each o As MissionMapObject In mapObjects
+            If o.Kind = MapObjectKind.Wall Then Continue For
+            Dim r As System.Drawing.Rectangle = tileRect(LuaToTile(o.X), LuaToTile(o.Y))
+            Dim cx As Single = r.Left + r.Width / 2.0F
+            Dim cy As Single = r.Top + r.Height / 2.0F
+            Dim h As Single = Math.Max(3.0F, r.Width * 0.45F)
+            If o.Kind = MapObjectKind.Beacon Then
+                Dim label As String
+                Dim col As Color
+                Select Case o.ObjType
+                    Case "MagmaVent" : label = "V" : col = Color.OrangeRed
+                    Case "Fumarole" : label = "F" : col = Color.MediumPurple
+                    Case Else
+                        Select Case o.Ore
+                            Case "Common" : label = "C" : col = Color.Gold
+                            Case "Rare" : label = "R" : col = Color.DeepSkyBlue
+                            Case Else : label = "?" : col = Color.WhiteSmoke
+                        End Select
+                End Select
+                Dim pts As PointF() = {New PointF(cx, cy - h), New PointF(cx + h, cy), New PointF(cx, cy + h), New PointF(cx - h, cy)}
+                Using br As New SolidBrush(Color.FromArgb(200, col))
+                    g.FillPolygon(br, pts)
+                End Using
+                g.DrawPolygon(Pens.Black, pts)
+                If r.Width >= 12 Then
+                    Using f As New Font(font.FontFamily, Math.Max(6.0F, r.Width * 0.3F), FontStyle.Bold, GraphicsUnit.Pixel)
+                        Dim sz As SizeF = g.MeasureString(label, f)
+                        g.DrawString(label, f, Brushes.Black, cx - sz.Width / 2, cy - sz.Height / 2)
+                    End Using
                 End If
-                depth -= 1
+            Else
+                Using pen As New Pen(Color.Magenta, Math.Max(1.0F, r.Width / 12.0F))
+                    g.DrawEllipse(pen, cx - h, cy - h, 2 * h, 2 * h)
+                End Using
+                If Not String.IsNullOrEmpty(o.Name) Then g.DrawString(o.Name, font, Brushes.Magenta, r.Right, r.Top)
             End If
         Next
-        Return result
-    End Function
-
-    Private Function ParseUnitEntry(entry As String) As MissionUnit
-        Dim atM As Match = Regex.Match(entry, "at\s*=\s*\{\s*(-?\d+)\s*,\s*(-?\d+)")
-        If Not atM.Success Then Return Nothing                     ' no position -> skip
-        Dim u As New MissionUnit()
-        u.X = Integer.Parse(atM.Groups(1).Value)
-        u.Y = Integer.Parse(atM.Groups(2).Value)
-        Dim tM As Match = Regex.Match(entry, "type\s*=\s*""([^""]+)""")
-        u.UnitType = If(tM.Success, tM.Groups(1).Value, "Unit")
-        Dim pM As Match = Regex.Match(entry, "player\s*=\s*(\d+)")
-        u.Player = If(pM.Success, Integer.Parse(pM.Groups(1).Value), 1)
-        Dim nM As Match = Regex.Match(entry, "name\s*=\s*""([^""]+)""")
-        If nM.Success Then u.Name = nM.Groups(1).Value
-        Dim wM As Match = Regex.Match(entry, "weapon\s*=\s*""([^""]+)""")
-        If wM.Success Then u.Weapon = wM.Groups(1).Value
-        Dim cM As Match = Regex.Match(entry, "cargo\s*=\s*""([^""]+)""")
-        If cM.Success Then u.Cargo = cM.Groups(1).Value
-        Dim aM As Match = Regex.Match(entry, "amount\s*=\s*(\d+)")
-        If aM.Success Then u.Amount = Integer.Parse(aM.Groups(1).Value)
-        Return u
-    End Function
+    End Sub
 
     ' Draw units as small player-coloured placeholder boxes with a short type label.
     Private Sub DrawUnits(g As Graphics)
@@ -1423,6 +1719,7 @@ Partial Public Class fMain
         Dim sel As Integer = If(lstUnits IsNot Nothing, lstUnits.SelectedIndex, -1)
         For i As Integer = 0 To unitList.Count - 1
             Dim u As MissionUnit = unitList(i)
+            If Not u.HasAt Then Continue For
             Dim t0x, t0y, t1x, t1y As Integer
             UnitFootprintTiles(u, t0x, t0y, t1x, t1y)
             Dim rect As System.Drawing.Rectangle = TilesToScreenRect(t0x, t0y, t1x, t1y)
@@ -1431,29 +1728,42 @@ Partial Public Class fMain
                 g.FillRectangle(fill, rect)
             End Using
             If i = sel Then
-                g.DrawRectangle(New Pen(Color.White, 3), rect)
+                Using selPen As New Pen(Color.White, 3)
+                    g.DrawRectangle(selPen, rect)
+                End Using
             Else
                 g.DrawRectangle(Pens.Black, rect)
             End If
 
             Dim label As String = UnitAbbrev(u.UnitType)
-            Using f As New Font(Me.Font.FontFamily, 7.0F, FontStyle.Bold)
-                Dim sz As SizeF = g.MeasureString(label, f)
-                Dim lx As Single = rect.Left + (rect.Width - sz.Width) / 2
-                Dim ly As Single = rect.Top + (rect.Height - sz.Height) / 2
-                g.DrawString(label, f, Brushes.Black, lx + 1, ly + 1)
-                g.DrawString(label, f, Brushes.White, lx, ly)
-            End Using
+            Dim f As Font = UnitLabelFont()
+            Dim sz As SizeF = g.MeasureString(label, f)
+            Dim lx As Single = rect.Left + (rect.Width - sz.Width) / 2
+            Dim ly As Single = rect.Top + (rect.Height - sz.Height) / 2
+            g.DrawString(label, f, Brushes.Black, lx + 1, ly + 1)
+            g.DrawString(label, f, Brushes.White, lx, ly)
         Next
     End Sub
+
+    ' The font of the unit labels on the map, made once (DrawUnits runs on every paint).
+    Private unitLabelFontCache As Font = Nothing
+    Private Function UnitLabelFont() As Font
+        If unitLabelFontCache Is Nothing Then unitLabelFontCache = New Font(Me.Font.FontFamily, 7.0F, FontStyle.Bold)
+        Return unitLabelFontCache
+    End Function
 
     Private Shared ReadOnly unitAbbrevs As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase) From {
         {"CommandCenter", "CC"}, {"GuardPost", "GP"}, {"CargoTruck", "TRUCK"}, {"ConVec", "CONVEC"},
         {"Lynx", "LYNX"}, {"Tiger", "TIGER"}, {"Panther", "PANTH"}, {"Scorpion", "SCORP"},
         {"Tokamak", "TOK"}, {"MHDGenerator", "MHD"}, {"SolarPowerArray", "SOLAR"},
         {"StructureFactory", "SFAC"}, {"VehicleFactory", "VFAC"}, {"Agridome", "AGRI"},
-        {"CommonOreSmelter", "SMELT"}, {"CommonOreMine", "MINE"}, {"ResidenceuD", "RES"},
-        {"RoboMiner", "MINER"}, {"RoboSurveyor", "SURV"}, {"RoboDozer", "DOZER"}, {"Earthworker", "EWORK"}}
+        {"CommonOreSmelter", "SMELT"}, {"CommonOreMine", "MINE"}, {"Residence", "RES"},
+        {"RoboMiner", "MINER"}, {"RoboSurveyor", "SURV"}, {"RoboDozer", "DOZER"}, {"Earthworker", "EWORK"},
+        {"RareOreSmelter", "RSMELT"}, {"RareOreMine", "RMINE"}, {"CommonStorage", "STOR"}, {"RareStorage", "RSTOR"},
+        {"GeothermalPlant", "GEO"}, {"RecreationFacility", "REC"}, {"ReinforcedResidence", "RRES"},
+        {"AdvancedResidence", "ARES"}, {"EvacuationTransport", "EVAC"}, {"RepairVehicle", "REPAIR"},
+        {"ArachnidFactory", "AFAC"}, {"ConsumerFactory", "CFAC"}, {"MedicalCenter", "MED"}, {"MeteorDefense", "METEOR"},
+        {"LightTower", "LIGHT"}, {"StandardLab", "SLAB"}, {"AdvancedLab", "ALAB"}, {"BasicLab", "LAB"}}
 
     Private Function UnitAbbrev(unitType As String) As String
         If String.IsNullOrEmpty(unitType) Then Return "?"
@@ -1463,8 +1773,9 @@ Partial Public Class fMain
     End Function
 
     ' Building footprints in tiles (X-size x Y-size), keyed by the .opm type name used in placement.lua.
-    ' Source: OPU\base\sheets\building.txt (see D:\opu\op2remake\OP2_BUILDINGS.md). Vehicles and anything
-    ' not listed here are 1x1. OP2 stores a structure's position as its footprint CENTRE.
+    ' Source: the X-size / Y-size columns of OPU\base\sheets\building.txt. Vehicles and anything not listed here are
+    ' 1x1. A structure's location is the tile where its tube lines cross: its centre, or right of / below it for an
+    ' even size (a Tokamak's is its lower-right tile).
     Private Shared ReadOnly buildingFootprints As New Dictionary(Of String, Size)(StringComparer.OrdinalIgnoreCase) From {
         {"CommandCenter", New Size(3, 2)}, {"RobotCommand", New Size(2, 2)}, {"TradeCenter", New Size(2, 2)},
         {"Tokamak", New Size(2, 2)}, {"MHDGenerator", New Size(2, 2)}, {"SolarPowerArray", New Size(3, 2)},
@@ -1477,11 +1788,45 @@ Partial Public Class fMain
         {"BasicLab", New Size(2, 2)}, {"StandardLab", New Size(3, 2)}, {"AdvancedLab", New Size(3, 3)}, {"Observatory", New Size(2, 2)},
         {"Residence", New Size(2, 2)}, {"ReinforcedResidence", New Size(3, 2)}, {"AdvancedResidence", New Size(3, 3)},
         {"Agridome", New Size(3, 2)}, {"Nursery", New Size(2, 2)}, {"University", New Size(2, 2)}, {"MedicalCenter", New Size(2, 2)},
-        {"Forum", New Size(2, 2)}, {"RecFacility", New Size(2, 2)}, {"DIRT", New Size(3, 2)},
+        {"Forum", New Size(2, 2)}, {"RecreationFacility", New Size(2, 2)}, {"DIRT", New Size(3, 2)},
         {"MeteorDefense", New Size(2, 2)}, {"GuardPost", New Size(1, 1)}, {"LightTower", New Size(1, 1)},
         {"Tube", New Size(1, 1)}, {"Wall", New Size(1, 1)}, {"LavaWall", New Size(1, 1)}, {"MicrobeWall", New Size(1, 1)}}
 
     ' Footprint (tiles) for a type. Unknown / vehicles -> 1x1.
+    ' Structures the game makes without a dozed border (building.txt's Border column is N): power plants, mines,
+    ' light towers, tubes and walls. Every other structure gets a one-tile ring of bulldozed ground around it.
+    Private Shared ReadOnly noBorderTypes As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
+        "Tokamak", "MHDGenerator", "GeothermalPlant", "SolarPowerArray", "LightTower",
+        "MagmaWell", "CommonOreMine", "RareOreMine", "Tube", "Wall", "LavaWall", "MicrobeWall"}
+
+    Private Function HasDozedBorder(unitType As String) As Boolean
+        Return Not String.IsNullOrEmpty(unitType) AndAlso buildingFootprints.ContainsKey(unitType) AndAlso
+               Not noBorderTypes.Contains(unitType)
+    End Function
+
+    ' The bulldozed ring the game clears around a structure, one tile out from each bordered structure's footprint,
+    ' drawn under everything. A tile is dozed or not: tiles in two rings are collected once and filled once, so
+    ' overlapping rings don't draw darker. tileRect gives a 0-based tile's rectangle on g.
+    Private Sub DrawDozedBorders(g As Graphics, tileRect As Func(Of Integer, Integer, System.Drawing.Rectangle))
+        If unitList Is Nothing Then Return
+        Dim dozed As New HashSet(Of Integer)()
+        For Each u As MissionUnit In unitList
+            If Not u.HasAt OrElse Not HasDozedBorder(u.UnitType) Then Continue For
+            Dim t0x, t0y, t1x, t1y As Integer
+            UnitFootprintTiles(u, t0x, t0y, t1x, t1y)
+            For x As Integer = t0x - 1 To t1x + 1
+                For y As Integer = t0y - 1 To t1y + 1
+                    dozed.Add((x + 1000) * 10000 + (y + 1000))      ' one key per tile (off-map tiles too)
+                Next
+            Next
+        Next
+        Using fill As New SolidBrush(Color.FromArgb(150, 72, 66, 60))
+            For Each k As Integer In dozed
+                g.FillRectangle(fill, tileRect(k \ 10000 - 1000, k Mod 10000 - 1000))
+            Next
+        End Using
+    End Sub
+
     Private Function FootprintOf(unitType As String) As Size
         Dim s As Size
         If Not String.IsNullOrEmpty(unitType) AndAlso buildingFootprints.TryGetValue(unitType, s) Then Return s
@@ -1524,8 +1869,10 @@ Partial Public Class fMain
         unitsMenu.DropDownItems.Add(mnuUnitMode)
         unitsMenu.DropDownItems.Add(New ToolStripSeparator())
 
-        unitsMenu.DropDownItems.Add(BuildChoiceMenu("Unit Type", unitTypeChoices, currentUnitType, Sub(v) currentUnitType = v))
-        unitsMenu.DropDownItems.Add(BuildChoiceMenu("Player", New String() {"1", "2", "3", "4"},
+        unitsMenu.DropDownItems.Add(BuildGroupedChoiceMenu("Unit Type",
+                                                           {Tuple.Create("Vehicles", vehicleTypeChoices), Tuple.Create("Structures", structureTypeChoices)},
+                                                           currentUnitType, Sub(v) currentUnitType = v))
+        unitsMenu.DropDownItems.Add(BuildChoiceMenu("Player", New String() {"1", "2", "3", "4", "5", "6"},
                                                     currentUnitPlayer.ToString(), Sub(v) currentUnitPlayer = Integer.Parse(v)))
         unitsMenu.DropDownItems.Add(BuildChoiceMenu("Weapon", unitWeaponChoices,
                                                     If(currentUnitWeapon = "", "(none)", currentUnitWeapon),
@@ -1546,10 +1893,9 @@ Partial Public Class fMain
             MainMenuStrip.Items.Insert(Math.Max(0, MainMenuStrip.Items.Count - 1), unitsMenu)
         End If
 
-        Dim props As Control = GetPropertiesPanel()
-        Dim lbl As New Label() With {.Text = "Units (place mode: click = add, drag = move)",
-                                     .Dock = DockStyle.Bottom, .Height = 18, .TextAlign = ContentAlignment.MiddleLeft}
-        lstUnits = New ListBox() With {.Name = "lstUnits", .Dock = DockStyle.Bottom, .Height = 120, .IntegralHeight = False}
+        lblUnitsHeader = ListHeader("Units")
+        lstUnits = New ListBox() With {.Name = "lstUnits", .Dock = DockStyle.Fill, .IntegralHeight = False,
+                                       .Font = ListFont(), .HorizontalScrollbar = True}
         AddHandler lstUnits.SelectedIndexChanged, Sub(s, ev) InvalidateMap()
         Dim ctx As New ContextMenuStrip()
         Dim ctxDel As New ToolStripMenuItem("Delete Unit")
@@ -1562,8 +1908,11 @@ Partial Public Class fMain
                                                If idx >= 0 Then lstUnits.SelectedIndex = idx
                                            End If
                                        End Sub
-        props.Controls.Add(lstUnits)
-        props.Controls.Add(lbl)
+        listsSplit.Panel2.Controls.Add(lstUnits)
+        listsSplit.Panel2.Controls.Add(lblUnitsHeader)
+        lstUnits.BringToFront()
+        SizeListsSplit(GetPropertiesPanel())
+        RefreshUnitList()
     End Sub
 
     ' A submenu of mutually-exclusive checkable choices; onSelect fires with the chosen value.
@@ -1581,6 +1930,32 @@ Partial Public Class fMain
                                        root.Text = title & ":  " & val
                                    End Sub
             root.DropDownItems.Add(item)
+        Next
+        Return root
+    End Function
+
+    ' A choice menu whose choices sit in named submenus (Vehicles / Structures); one choice is checked across them.
+    Private Function BuildGroupedChoiceMenu(title As String, groups As Tuple(Of String, String())(), current As String,
+                                            onSelect As Action(Of String)) As ToolStripMenuItem
+        Dim root As New ToolStripMenuItem(title & ":  " & current)
+        Dim all As New List(Of ToolStripMenuItem)()
+        For Each grp As Tuple(Of String, String()) In groups
+            Dim sub_ As New ToolStripMenuItem(grp.Item1)
+            For Each c As String In grp.Item2
+                Dim item As New ToolStripMenuItem(c)
+                item.Checked = (c = current)
+                Dim val As String = c
+                AddHandler item.Click, Sub(s, ev)
+                                           onSelect(val)
+                                           For Each other As ToolStripMenuItem In all
+                                               other.Checked = (other Is item)
+                                           Next
+                                           root.Text = title & ":  " & val
+                                       End Sub
+                all.Add(item)
+                sub_.DropDownItems.Add(item)
+            Next
+            root.DropDownItems.Add(sub_)
         Next
         Return root
     End Function
@@ -1640,6 +2015,7 @@ Partial Public Class fMain
 
     Private Function UnitAtTile(tx As Integer, ty As Integer) As Integer
         For i As Integer = unitList.Count - 1 To 0 Step -1
+            If Not unitList(i).HasAt Then Continue For
             Dim t0x, t0y, t1x, t1y As Integer
             UnitFootprintTiles(unitList(i), t0x, t0y, t1x, t1y)
             If tx >= t0x AndAlso tx <= t1x AndAlso ty >= t0y AndAlso ty <= t1y Then Return i
@@ -1648,6 +2024,9 @@ Partial Public Class fMain
     End Function
 
     Private Sub RefreshUnitList()
+        If lblUnitsHeader IsNot Nothing Then
+            lblUnitsHeader.Text = "Units (" & unitList.Count & ")   place mode: click = add, drag = move"
+        End If
         If lstUnits Is Nothing Then Return
         Dim keep As Integer = lstUnits.SelectedIndex
         lstUnits.BeginUpdate()
@@ -1662,7 +2041,7 @@ Partial Public Class fMain
     Private Sub DeleteUnit_Click(sender As Object, e As EventArgs)
         Dim i As Integer = If(lstUnits IsNot Nothing, lstUnits.SelectedIndex, -1)
         If i < 0 OrElse i >= unitList.Count Then Return
-        unitList.RemoveAt(i)
+        PlacementText.DeleteUnit(unitsBlock, i)
         RefreshUnitList()
         InvalidateMap()
     End Sub
@@ -1670,7 +2049,9 @@ Partial Public Class fMain
     Private Sub ClearUnits_Click(sender As Object, e As EventArgs)
         If unitList.Count = 0 Then Return
         If MessageBox.Show("Clear all units?", "Confirm", MessageBoxButtons.YesNo, MessageBoxIcon.Question) = DialogResult.Yes Then
-            unitList.Clear()
+            While unitList.Count > 0
+                PlacementText.DeleteUnit(unitsBlock, unitList.Count - 1)
+            End While
             RefreshUnitList()
             InvalidateMap()
         End If
@@ -1683,9 +2064,10 @@ Partial Public Class fMain
             If dlg.ShowDialog() <> DialogResult.OK Then Return
             Try
                 Dim text As String = File.ReadAllText(dlg.FileName)
-                Dim updated As String = ReplaceUnitsBlock(text, EmitUnitsBlock())
+                Dim updated As String = WriteUnits(text, dlg.FileName)
                 File.Copy(dlg.FileName, dlg.FileName & ".bak", True)
                 File.WriteAllText(dlg.FileName, updated)
+                ReloadUnitsIfOpen(dlg.FileName, updated)
                 MessageBox.Show("Saved " & unitList.Count & " unit(s)." & vbCrLf &
                                 "Previous version backed up as " & Path.GetFileName(dlg.FileName) & ".bak.",
                                 "Units", MessageBoxButtons.OK, MessageBoxIcon.Information)
@@ -1694,38 +2076,6 @@ Partial Public Class fMain
             End Try
         End Using
     End Sub
-
-    ' Emit the   units = { ... }   table. Preserves name/weapon/cargo captured on load.
-    Private Function EmitUnitsBlock() As String
-        Dim sb As New StringBuilder()
-        sb.Append("units = {")
-        sb.Append(vbCrLf)
-        For Each u As MissionUnit In unitList
-            sb.Append("    { ")
-            If Not String.IsNullOrEmpty(u.Name) Then sb.Append("name = """ & u.Name & """, ")
-            sb.Append("type = """ & u.UnitType & """, player = " & u.Player & ", at = { " & u.X & ", " & u.Y & " }")
-            If Not String.IsNullOrEmpty(u.Weapon) Then sb.Append(", weapon = """ & u.Weapon & """")
-            If Not String.IsNullOrEmpty(u.Cargo) Then sb.Append(", cargo = """ & u.Cargo & """, amount = " & u.Amount)
-            sb.Append(" },")
-            sb.Append(vbCrLf)
-        Next
-        sb.Append("  }")
-        Return sb.ToString()
-    End Function
-
-    Private Function ReplaceUnitsBlock(text As String, newBlock As String) As String
-        Dim m As Match = Regex.Match(text, "units\s*=\s*\{")
-        If m.Success Then
-            Dim braceOpen As Integer = text.IndexOf("{"c, m.Index)
-            Dim closeIdx As Integer = MatchBrace(text, braceOpen)
-            If closeIdx > braceOpen Then
-                Return text.Substring(0, m.Index) & newBlock & text.Substring(closeIdx + 1)
-            End If
-        End If
-        Dim lastBrace As Integer = text.LastIndexOf("}"c)
-        If lastBrace < 0 Then Return text & vbCrLf & newBlock & vbCrLf
-        Return text.Substring(0, lastBrace) & "  " & newBlock & "," & vbCrLf & text.Substring(lastBrace)
-    End Function
 
     ' Draw regions (+ units) in MAP-PIXEL space (32 px per tile, no zoom/pan) for image export.
     Private Sub RenderOverlayMapPixels(g As Graphics)
@@ -1748,18 +2098,25 @@ Partial Public Class fMain
                     g.DrawRectangle(pen, rect)
                 End Using
                 If r.Kind = RegionKind.Point Then
-                    g.DrawLine(New Pen(col, 2), rect.Left, rect.Top, rect.Right, rect.Bottom)
-                    g.DrawLine(New Pen(col, 2), rect.Right, rect.Top, rect.Left, rect.Bottom)
+                    Using cross As New Pen(col, 2)
+                        g.DrawLine(cross, rect.Left, rect.Top, rect.Right, rect.Bottom)
+                        g.DrawLine(cross, rect.Right, rect.Top, rect.Left, rect.Bottom)
+                    End Using
                 End If
                 Dim sz As SizeF = g.MeasureString(r.Name, regionFont)
                 Using bg As New SolidBrush(Color.FromArgb(190, Color.Black))
                     g.FillRectangle(bg, rect.Left, rect.Top - sz.Height, sz.Width + 6, sz.Height)
                 End Using
-                g.DrawString(r.Name, regionFont, New SolidBrush(col), rect.Left + 3, rect.Top - sz.Height)
+                Using nameBrush As New SolidBrush(col)
+                    g.DrawString(r.Name, regionFont, nameBrush, rect.Left + 3, rect.Top - sz.Height)
+                End Using
             Next
-            ' units
+            ' beacons, walls and markers, then units
+            If showUnits Then DrawDozedBorders(g, Function(tx, ty) New System.Drawing.Rectangle(tx * 32, ty * 32, 32, 32))
+            If showMapObjects Then DrawMapObjects(g, Function(tx, ty) New System.Drawing.Rectangle(tx * 32, ty * 32, 32, 32), unitFont)
             If showUnits AndAlso unitList IsNot Nothing Then
                 For Each u As MissionUnit In unitList
+                    If Not u.HasAt Then Continue For
                     Dim t0x, t0y, t1x, t1y As Integer
                     UnitFootprintTiles(u, t0x, t0y, t1x, t1y)
                     Dim rect As New System.Drawing.Rectangle(t0x * 32, t0y * 32, (t1x - t0x + 1) * 32, (t1y - t0y + 1) * 32)

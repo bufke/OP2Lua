@@ -111,7 +111,7 @@ Partial Class fMissionProps
         'cboType
         '
         Me.cboType.FormattingEnabled = True
-        Me.cboType.Items.AddRange(New Object() {"Colony", "Combat"})
+        Me.cboType.Items.AddRange(New Object() {"Colony", "Tutorial", "AutoDemo", "MultiLastOneStanding", "MultiLandRush", "MultiSpaceRace", "MultiResourceRace", "MultiMidas"})
         Me.cboType.Location = New System.Drawing.Point(120, 108)
         Me.cboType.Name = "cboType"
         Me.cboType.Size = New System.Drawing.Size(160, 21)

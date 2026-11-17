@@ -109,6 +109,7 @@
     </Compile>
     <Compile Include="GlobalVariables.vb" />
     <Compile Include="MissionTypes.vb" />
+    <Compile Include="PlacementText.vb" />
     <Compile Include="fMissionProps.Designer.vb">
       <DependentUpon>fMissionProps.vb</DependentUpon>
     </Compile>

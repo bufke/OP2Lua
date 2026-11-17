@@ -16,9 +16,14 @@ write the `<Name>.lua` (the logic), and `OP2LuaCore.dll` runs them in-game.
 ## Features
 
 - **Open / load a map** as the editing backdrop (reads OP2 1.4.1 tile graphics from the well BMPs).
-- **Place units** for each player and **draw regions / markers**, round-tripped to/from `placement.lua`.
-- **Mission & player properties** - name, map, tech, mission type, starting resources.
-- **New Mission** scaffolding - clones the stub DLL and patches its name/map, writes skeleton scripts.
+- **Place units** for each player (1-6) and **draw regions**, round-tripped to/from `placement.lua`. Saving
+  rewrites only what you changed: every other field, comment and line of the file stays as it was.
+- **Beacons, walls, tubes and markers** from `placement.lua` are drawn on the map for context.
+- **Mission properties** - name, map, tech, mission type (Colony, Tutorial, AutoDemo or a multiplayer type),
+  players, max tech level; the mission DLL is patched to match.
+- **New Mission** scaffolding - clones the stub DLL and patches its name, map, type and player count, writes
+  skeleton scripts (a multiplayer type gets a lobby-driven skeleton).
+- **Open a mission** from File > Open Mission, the command line, or by dropping its `.lua` on the map.
 - Coordinates match the in-game status bar (what you place is where it lands).
 
 ## Requirements
