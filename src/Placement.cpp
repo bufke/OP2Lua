@@ -239,6 +239,9 @@ void ApplyPlayers(sol::state& L, sol::table& luaPlayers) {
       p.SetScientists(Field<int>(*res, "scientists", 0));
       const int sat = Field<int>(*res, "solar_satellites", 0);
       if (sat > 0) p.SetSolarSat(sat);
+      // EDWARD Satellites in orbit: with one up every mining beacon counts as surveyed for the player.
+      const int edward = Field<int>(*res, "edward_satellites", 0);
+      if (edward > 0) if (auto* impl = p.GetImpl()) impl->satellites_.numEDWARDSatllites = static_cast<uint32_t>(edward > 15 ? 15 : edward);
       const int techLevel = Field<int>(*res, "tech_level", 0);
       if (techLevel > 0) p.SetTechLevel(techLevel);
       sol::optional<sol::table> research = (*res)["completed_research"];

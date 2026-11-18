@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "ApiTypes.h"
+#include "Hackaray.h"
 #include "LuaHost.h"
 #include "Log.h"
 #include "Names.h"
@@ -48,6 +49,7 @@ using std::min;
 #include "Tethys/Game/MineManager.h"    // OreYield, OreVariant (game.create_beacon)
 #include "Tethys/Game/MapObjectType.h"  // Tethys::MapObjectType (building footprint for site finding)
 #include "Tethys/Game/Research.h"       // Tethys::Research (validate tech ids before use - see ReportBadTech)
+#include "Tethys/Game/TubeConnection.h"  // TubeConnection (a building's DIRT damage prevention)
 #include "Tethys/Resource/SoundID.h"  // SoundID
 
 namespace OP2Lua {
@@ -165,7 +167,7 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
-// game.version() -> "0.7.9", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+// game.version() -> "0.8.0", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
 std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
 
 // game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
@@ -187,10 +189,13 @@ Tethys::MoraleLevel MoraleFromName(const std::string& n) {
 
 // game.morale_steady([level]) - lock all players' morale at a level (default "Good") so the colony
 // doesn't fluctuate or collapse. This is the multiplayer "Morale Steady" rule: focus on fighting.
-void Game_MoraleSteady(sol::object level) {
+// game.morale_steady([level [, player]]) - lock morale at `level` for every player, or one (a Player or 1-based number;
+// a mission can lock it for one player, as a reward for something that player did).
+void Game_MoraleSteady(sol::object level, sol::object player) {
   const auto lvl = level.is<std::string>() ? MoraleFromName(level.as<std::string>())
                                            : Tethys::MoraleLevel::Good;
-  Game::ForceMoraleLevel(lvl, Tethys::AllPlayers);
+  const bool all = !player.valid() || player == sol::lua_nil;
+  Game::ForceMoraleLevel(lvl, all ? static_cast<int>(Tethys::AllPlayers) : PlayerNumFrom(player));
   LOG_MISSION(INFO) << "game.morale_steady";
 }
 // game.free_morale([player]) - release the lock (all players, or one: a Player or a 1-based number); morale
@@ -1376,6 +1381,43 @@ static bool gAIToComms = false;
 // running. Fully qualified so it compiles regardless of which `using`s are in scope here.
 int CurrentMarkForLog() { return Tethys::TethysAPI::Game::Tick() / 100; }
 
+// ---- unit stats, tech gates and costs (missions that change the rules as they go) ----
+
+// A per-player unit stat's offset in PerPlayerUnitStats (Tethys/Game/MapObjectType.h), by name, or -1. The record's
+// last part means different things for vehicles, weapons and buildings; each name is its field's offset, whatever the
+// type ("move_speed" and "power" are the same field).
+int UnitStatOffset(const std::string& field) {
+  static const std::map<std::string, int> offsets = {
+    { "hp", 0x00 }, { "repair", 0x04 }, { "armor", 0x08 }, { "common_cost", 0x0C }, { "rare_cost", 0x10 },
+    { "build_time", 0x14 }, { "sight_range", 0x18 },
+    { "move_speed", 0x24 }, { "power", 0x24 },
+    { "turn_rate", 0x28 }, { "concussion", 0x28 }, { "workers", 0x28 },
+    { "production_rate", 0x2C }, { "penetration", 0x2C }, { "scientists", 0x2C },
+    { "reload_time", 0x30 }, { "storage", 0x30 },
+    { "weapon_range", 0x34 }, { "production_capacity", 0x34 },
+    { "cargo_capacity", 0x38 }, { "storage_bays", 0x38 },
+  };
+  const auto it = offsets.find(field);
+  return (it != offsets.end()) ? it->second : -1;
+}
+
+// The stat `field` of unit `type` (a name, or a raw MapID number as a mission's loops over the types use) for player
+// `num` (0-6), or nullptr (logged) for an unknown type, field or player.
+int* UnitStatPtr(int num, const sol::object& typeArg, const std::string& field, const char* fn) {
+  const MapID t = typeArg.is<int>() ? static_cast<MapID>(typeArg.as<int>())
+                : typeArg.is<std::string>() ? MapIdFromName(typeArg.as<std::string>()) : MapID::None;
+  const std::string type = typeArg.is<std::string>() ? typeArg.as<std::string>() : std::to_string(static_cast<int>(t));
+  const int off = UnitStatOffset(field);
+  const int id = static_cast<int>(t);
+  Tethys::MapObjectType*const mot = (id > 0 && id < static_cast<int>(MapID::MaxObject)) ? Tethys::MapObjectType::GetInstance(id) : nullptr;
+  if ((mot == nullptr) || (off < 0) || (num < 0) || (num > 6)) {
+    LOG_MISSION(ERROR) << "OP2Lua: " << fn << "(" << type << ", " << field << ") for player " << (num + 1)
+                       << ": unknown unit type, stat or player - ignored";
+    return nullptr;
+  }
+  return reinterpret_cast<int*>(reinterpret_cast<char*>(&mot->playerStats_[num]) + off);
+}
+
 void RegisterBindings(sol::state& lua) {
   gAIToComms = false;   // each mission starts with AI events NOT shown in-game
   sol::table game = lua.create_named_table("game");
@@ -1473,6 +1515,39 @@ void RegisterBindings(sol::state& lua) {
     reinterpret_cast<Fn>(0x478420)(f.x, f.y, PlayerNumFrom(player), t.x, t.y); });
   // game.wreckage() - the wreckage on the map (type 0x54, the gaia player's, 6), as a stock mission walks it
   // (Eden 6).
+  // game.set_music(songs [, repeat_from]) - the music playlist: the game's song numbers in order, and the position
+  // (1-based) the list starts again from once it has played through (default 1), as a mission's
+  // TethysGame::SetMusicPlayList sets it.
+  game.set_function("set_music", [](sol::table songs, sol::optional<int> repeatFrom) {
+    std::vector<Tethys::SongID> ids;
+    for (auto& kv : songs) if (kv.second.is<int>()) ids.push_back(static_cast<Tethys::SongID>(kv.second.as<int>()));
+    if (ids.empty()) return;
+    const int from = std::clamp(repeatFrom.value_or(1), 1, static_cast<int>(ids.size())) - 1;
+    Game::SetMusicPlayList(static_cast<int>(ids.size()), from, ids.data()); });
+  // game.player(n) - the Player of slot n (1-7), whether or not the lobby has it: `players` holds the lobby's, and a
+  // mission's own computer player beyond them (the game's player 6, say) is game.player(7). Nil
+  // outside 1-7.
+  game.set_function("player", [](int n, sol::this_state ts) -> sol::object {
+    sol::state_view L(ts);
+    if (n < 1 || n > 7) return sol::make_object(L, sol::lua_nil);
+    return sol::make_object(L, LuaPlayer{ n - 1 }); });
+  // game.set_required_tech(type, tech) - the topic a unit type (a name or raw MapID) needs before it can be built (MapObjectType's
+  // requiredTechNum_, which holds the topic's place in the tech tree, not its id), so a mission can gate units behind
+  // its own topics. Every player is affected.
+  game.set_function("set_required_tech", [](sol::object type, int techId) {
+    const MapID t = type.is<int>() ? static_cast<MapID>(type.as<int>())
+                  : type.is<std::string>() ? MapIdFromName(type.as<std::string>()) : MapID::None;
+    const int id = static_cast<int>(t);
+    Tethys::MapObjectType*const mot = (id > 0 && id < static_cast<int>(MapID::MaxObject)) ? Tethys::MapObjectType::GetInstance(id) : nullptr;
+    if (mot == nullptr) { LOG_MISSION(ERROR) << "OP2Lua: set_required_tech: unknown unit type " << id; return; }
+    if (!IsValidTechId(techId)) { ReportBadTech("set_required_tech", techId); return; }
+    mot->requiredTechNum_ = Tethys::Research::GetInstance()->GetTechNum(techId); });
+  // game.set_tech_cost(tech, cost) - the research a topic takes, for Eden and Plymouth alike; -1 makes it impossible to
+  // research.
+  game.set_function("set_tech_cost", [](int techId, int cost) {
+    if (!IsValidTechId(techId)) { ReportBadTech("set_tech_cost", techId); return; }
+    Tethys::TechInfo*const info = Tethys::Research::GetInstance()->GetTechInfo(techId);
+    if (info != nullptr) { info->edenCost = cost; info->plymouthCost = cost; } });
   game.set_function("wreckage", [](sol::this_state ts) {
     sol::state_view L(ts);
     sol::table out = L.create_table();
@@ -1711,6 +1786,23 @@ void RegisterBindings(sol::state& lua) {
       // A Spaceport's rocket on its pad ("EMPMissile", ...), or "None".
       "object_on_pad",      sol::property([](const Unit& u) { return NameFromMapId(u.IsLive() ? u.GetRocketOnPad() : MapID::None); }),
       "is_emped",           sol::property([](const Unit& u) { return u.IsEMPed(); }),
+      // The way a vehicle faces, 0-255 (0 East, clockwise: 64 South, 128 West, 192 North); a facing is rotation / 32.
+      "rotation",           sol::property([](const Unit& u) { return u.IsValid() ? int(u.GetMapObject()->rotation_) : 0; }),
+      // A vehicle is stickyfoamed (MoFlagVecStickyfoamed, bit 18 of the flags at +0x44).
+      "is_stickyfoamed",    sol::property([](const Unit& u) { return u.IsLive() && u.IsVehicle() && (u.GetMapObject()->flags_ & Tethys::MoFlagVecStickyfoamed) != 0; }),
+      // The unit fires twice as often (MoFlagDoubleFireRate, bit 5 of the flags at +0x44: the Tiger's), read and set.
+      "double_fire_rate",   sol::property([](const Unit& u) { return u.IsValid() && (u.GetMapObject()->flags_ & Tethys::MoFlagDoubleFireRate) != 0; },
+                                          [](Unit& u, bool on) { if (u.IsLive()) u.SetFlag(Tethys::MoFlagDoubleFireRate, on); }),
+      // A building's DIRT damage prevention, in hundredths of a percent (2500 = 25%), through its colony tube
+      // connection (TubeConnection::CalculateDIRTDamagePrevention 0x430050); 0 for a building with no connection or a
+      // vehicle.
+      "dirt_prevention",    sol::property([](const Unit& u) -> int {
+        if (!u.IsLive() || !u.IsBuilding()) return 0;
+        Tethys::TubeConnection*const tc = u.GetMapObject()->pTubeConnection_;
+        return (tc != nullptr) ? tc->CalculateDIRTDamagePrevention() : 0; }),
+      // The unit counts as made by an Eden player (MoFlagEden, bit 12), which picks Eden's art for it, read and set.
+      "eden",               sol::property([](const Unit& u) { return u.IsValid() && (u.GetMapObject()->flags_ & Tethys::MoFlagEden) != 0; },
+                                          [](Unit& u, bool on) { if (u.IsLive()) u.SetFlag(Tethys::MoFlagEden, on); }),
 
       // ---- position & perception ----
       // x / y are the unit's tile in author / status-bar coords (round-trip safe: feed {x,y} back to
@@ -1881,6 +1973,15 @@ void RegisterBindings(sol::state& lua) {
       // launched Spaceport cargo rocket the player has. Drives Starship-colony evacuation victories.
       "satellite_count", [](const LuaPlayer& p, const std::string& type) {
         return _Player(p.num).GetSatelliteCount(MapIdFromName(type)); },
+      // The EDWARD and Solar Power Satellites the player has in orbit (0-15 each), read and written. With an EDWARD
+      // Satellite up every mining beacon counts as surveyed for the player (MiningBeacon::IsSurveyed 0x4055F0), so its
+      // Robo-Miners need no Robo-Surveyor.
+      "edward_satellites", sol::property(
+        [](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? int(i->satellites_.numEDWARDSatllites) : 0; },
+        [](LuaPlayer& p, int n) { if (auto* i = _Player(p.num).GetImpl()) i->satellites_.numEDWARDSatllites = static_cast<uint32_t>(std::clamp(n, 0, 15)); }),
+      "solar_satellites", sol::property(
+        [](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? int(i->satellites_.numSolarSatellites) : 0; },
+        [](LuaPlayer& p, int n) { if (auto* i = _Player(p.num).GetImpl()) i->satellites_.numSolarSatellites = static_cast<uint32_t>(std::clamp(n, 0, 15)); }),
 
       // ---- technology ----
       // has_tech / mark_research validate the tech id first - a bad id crashes the engine's lookup
@@ -1892,6 +1993,24 @@ void RegisterBindings(sol::state& lua) {
       "mark_research",   [](LuaPlayer& p, int techId) {
                            if (!IsValidTechId(techId)) { ReportBadTech("mark_research", techId); return; }
                            _Player(p.num).MarkResearchComplete(techId); },
+      // unmark_research(tech) - the player no longer has the topic: the opposite of mark_research, so a mission can
+      // take a topic back (and with it what it opens up).
+      "unmark_research", [](LuaPlayer& p, int techId) {
+                           if (!IsValidTechId(techId)) { ReportBadTech("unmark_research", techId); return; }
+                           Tethys::TechInfo*const info = Tethys::Research::GetInstance()->GetTechInfo(techId);
+                           if (info != nullptr) info->playerHasTechMask.Set(p.num, false); },
+      // unit_stat(type, field) / set_unit_stat(type, field, value) - the player's stats for a unit type (a name, or a
+      // raw MapID number; the per-player
+      // record the tech tree's UNIT_PROP upgrades change): "hp", "repair", "armor" (the raw armor value: 256, 180,
+      // 130, 90, 60, 40 for classes 0-5), "common_cost", "rare_cost", "build_time", "sight_range", and, by kind of
+      // unit, "move_speed" / "turn_rate" / "production_rate" / "reload_time" / "cargo_capacity" (vehicles),
+      // "concussion" / "penetration" / "reload_time" / "weapon_range" (weapons), "power" / "workers" / "scientists" /
+      // "storage" / "production_capacity" / "storage_bays" (buildings).
+      "unit_stat",       [](const LuaPlayer& p, sol::object type, const std::string& field) -> int {
+                           const int*const v = UnitStatPtr(p.num, type, field, "unit_stat");
+                           return v ? *v : 0; },
+      "set_unit_stat",   [](LuaPlayer& p, sol::object type, const std::string& field, int value) {
+                           if (int*const v = UnitStatPtr(p.num, type, field, "set_unit_stat")) *v = value; },
       "set_tech_level",  [](LuaPlayer& p, int level)  { _Player(p.num).SetTechLevel(level); },
       "can_research",    [](const LuaPlayer& p, int techId) { return Player_CanResearch(p.num, techId); },
 
@@ -1948,6 +2067,7 @@ void RegisterBindings(sol::state& lua) {
       "center_view", [](const LuaPlayer& p, sol::object loc) { _Player(p.num).CenterViewOn(LocFrom(loc)); });
 
   RegisterGroupBindings(lua);
+  Hackaray::Register(lua);
 
   lua.new_usertype<Region>(
       "Region", sol::no_constructor,

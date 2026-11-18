@@ -25,6 +25,7 @@
 #include "Mission.h"
 #include "Placement.h"
 #include "ErrorHandling.h"
+#include "Hackaray.h"
 
 #include "Tethys/API/Mission.h"
 #include "Tethys/API/Unit.h"
@@ -309,6 +310,7 @@ void Reset() {
   Placement::Reset();
   OP2Lua::ResetUnitOrders();
   OP2Lua::ResetTriggers();
+  OP2Lua::Hackaray::Reset();
 }
 
 }  // namespace OP2Lua::Mission

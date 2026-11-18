@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(OP2Lua VERSION 0.7.9 LANGUAGES CXX C)
+project(OP2Lua VERSION 0.8.0 LANGUAGES CXX C)
 # NOTE: keep this VERSION in sync with OP2LUA_VERSION in src/OP2LuaCore.h.
 
 # ---------------------------------------------------------------------------
@@ -60,6 +60,7 @@ add_library(OP2LuaCore SHARED
   src/Placement.cpp
   src/LuaHost.cpp
   src/Bindings.cpp
+  src/Hackaray.cpp
   src/Names.cpp
   src/ErrorHandling.cpp
   src/Log.cpp
