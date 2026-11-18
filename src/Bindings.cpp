@@ -1696,6 +1696,9 @@ void RegisterBindings(sol::state& lua) {
       "under_construction", sol::property([](const Unit& u) { return u.IsUnderConstruction(); }),
       "is_factory",         sol::property([](const Unit& u) { return u.IsFactory(); }),
       "is_offensive",       sol::property([](const Unit& u) { return u.IsOffensive(); }),
+      // A vehicle's headlights are on (MoFlagVecHeadlights, bit 0 of the flags at +0x44): what op2extra's
+      // IUnit::GetLights reads, so a mission can wait for the player to switch them on.
+      "lights",             sol::property([](Unit& u) { return u.GetLights(); }),
       "is_infected",        sol::property([](const Unit& u) { return u.IsInfected(); }),
       "disabled",           sol::property([](const Unit& u) { return u.IsDisabled(); }),
       // The game's exported Unit::IsBusy, not Tethys's (see GameIsBusy): a Spaceport stays busy until its rocket
@@ -1798,6 +1801,14 @@ void RegisterBindings(sol::state& lua) {
                           using Fn = void(__thiscall*)(Unit*, int, int, int);
                           reinterpret_cast<Fn>(0x476160)(&u, bay - 1, d.x, d.y); } },
       "set_lights",     [](Unit& u, bool on) { if (u.IsLive()) u.DoSetLights(on); },
+      // Whether the unit counts as a combat unit (MoFlagOffensive, bit 4 of the flags at +0x44), as op2extra's
+      // IUnit::SetOffensive sets it: false keeps an escort from opening fire, true lets it fight again.
+      "set_offensive",  [](Unit& u, bool on) { if (u.IsLive()) u.SetFlag(Tethys::MoFlagOffensive, on); },
+      // EMPs the unit for `ticks` (the game's own MapObject::SetEMPed, 0x401880); -1 or more than 65535 gives the
+      // longest it can (the timer is 16 bits), as op2extra's SetEMPticks(-1) does. 0 ends it.
+      "set_emp",        [](Unit& u, int ticks) {
+                          if (!u.IsLive()) return;
+                          u.SetEMPed((ticks < 0 || ticks > 0xFFFF) ? 0xFFFF : ticks); },
       // [ConVec] structure kit it carries. The kit, a tank's weapon, and a truck's cargo all share one
       // union field in OP2 (a unit is only ever one of those), so set_kit / set_weapon / set_cargo are
       // really the same slot under different names - matching the unit type you call them on.

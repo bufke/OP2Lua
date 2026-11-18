@@ -5,6 +5,11 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+### Added
+- `unit.lights`: whether a vehicle's headlights are on.
+- `unit:set_offensive(on)`: whether a unit acts as a combat unit.
+- `unit:set_emp(ticks)`: EMP a unit for a time (`-1`: as long as the game can).
+
 ## [0.7.9] - 2026-11-17
 
 The full list is in CHANGES.md under [0.7.9].
