@@ -44,6 +44,7 @@ struct MissionState {
   sol::protected_function pump;  // __op2lua_pump (scheduler), from the runtime preamble
 };
 MissionState g;
+std::string gDir;   // the running mission's folder (Dir())
 
 void LogCbError(const char* cb, const std::string& what) {
   // A script error is a mission event - send it to the mission log, not the framework Main log.
@@ -205,6 +206,7 @@ std::string StripColonyPrefix(const std::string& base) {
 // Prefers <dir>/<base>.lua (+ <base>.placement.lua); falls back to mission.lua (+ placement.lua).
 void LoadMissionDir(const std::string& dir, const std::string& base) {
   EnsureCoreInit();                      // one-time: main log + crash reporter + mark stamp + pin
+  gDir = dir;
 
   // Point the per-mission Mission + AI logs at this mission, with a self-identifying header on each
   // (name + baked map + core version) so neither file needs the framework lines duplicated into it.
@@ -248,6 +250,8 @@ void LoadMissionDir(const std::string& dir, const std::string& base) {
 }
 
 }  // namespace
+
+std::string Dir() { return gDir; }
 
 std::string BuildTime() {
   HMODULE hSelf = nullptr;
@@ -309,6 +313,7 @@ void Reset() {
   g = MissionState();
   Placement::Reset();
   OP2Lua::ResetUnitOrders();
+  OP2Lua::StopMissionWav();
   OP2Lua::ResetTriggers();
   OP2Lua::Hackaray::Reset();
 }

@@ -40,6 +40,8 @@ void FlushUnitOrders();
 void ResetUnitOrders();
 // Notes the tick a unit was made, so its first orders wait until it can take them (FlushUnitOrders).
 void NoteUnitMade(int unitId);
+// Stops a WAV that game.play_wav started (the mission is unloading).
+void StopMissionWav();
 
 // Triggers made from Lua (trigger.* with an `on=` function) name the stub's OnTrigger export; OPU passes
 // it the trigger that fired, and FireTrigger runs that trigger's Lua function. ResetTriggers() on load

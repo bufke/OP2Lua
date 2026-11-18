@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(OP2Lua VERSION 0.8.0 LANGUAGES CXX C)
+project(OP2Lua VERSION 0.8.1 LANGUAGES CXX C)
 # NOTE: keep this VERSION in sync with OP2LUA_VERSION in src/OP2LuaCore.h.
 
 # ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ target_compile_definitions(OP2LuaCore PRIVATE
 if(MSVC)
   target_compile_options(OP2LuaCore PRIVATE /bigobj)  # sol2's templates: Bindings.cpp passes the default section limit
 endif()
-target_link_libraries(OP2LuaCore PRIVATE dbghelp)  # crash reporter
+target_link_libraries(OP2LuaCore PRIVATE dbghelp winmm)  # crash reporter; PlaySound (game.play_wav)
 set_target_properties(OP2LuaCore PROPERTIES OUTPUT_NAME "OP2LuaCore" PREFIX "")
 
 # ===========================================================================

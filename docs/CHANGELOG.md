@@ -5,9 +5,15 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-18
+
+The full list is in CHANGES.md under [0.8.1].
+
 ### Added
 
 - `game.units_closest`, `game.force_robot_command`, `game.clear_cheated`, `player:set_launched`.
+- `game.play_wav(file)`: a WAV shipped with the mission, at the game's sound volume; `game.message(text, false)`: a
+  message with no sound.
 
 ### Changed
 

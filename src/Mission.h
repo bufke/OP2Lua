@@ -16,6 +16,8 @@ std::string BuildTime();
 std::string GameVersion();
 std::string GameFileVersion();
 
+// The folder the running mission's DLL is in (where its scripts and its own files are).
+std::string Dir();
 // Clear the active mission and release its callback + placement references. Must run while the
 // Lua state is still alive (callbacks hold refs into it).
 void Reset();

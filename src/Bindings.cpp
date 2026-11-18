@@ -15,9 +15,13 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <array>
 #include <deque>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <sstream>
 #include <string>
@@ -160,10 +164,96 @@ int PlayerNumFrom(const sol::object& o) {
   return -1;
 }
 
-// game.message(text [, sound]) - in-game message log (presentation; safe per-client).
+// The sound manager's "sound is on" flag (+0x920: AddMapSound, 0x47EDB0, plays nothing while it is 0) and its
+// volume step (+0x914, OPU\outpost2.ini's SoundVol: a sound is played at -50 * step hundredths of a dB, 0x47E32D).
+int& GameSoundOn()  { return *reinterpret_cast<int*>(reinterpret_cast<char*>(Tethys::SoundManager::GetInstance()) + 0x920); }
+int  GameSoundVol() { return *reinterpret_cast<int*>(reinterpret_cast<char*>(Tethys::SoundManager::GetInstance()) + 0x914); }
+
+// A message with the sound `sound` names, or none for `false`. MessageLog::AddMessage (0x439070) always plays one
+// (sound 0 is Beep8), through AddGameSound -> AddMapSound, so the sound flag is off for that call.
+void AddMessageWith(const std::string& text, const sol::object& sound, int to, int px, int py) {
+  if (sound.is<bool>() && !sound.as<bool>()) {
+    int& on = GameSoundOn();
+    const int was = on;
+    on = 0;
+    Game::AddMessage(text, kDefaultMsgSound, to, px, py);
+    on = was;
+    return;
+  }
+  Game::AddMessage(text, ResolveSound(sound, kDefaultMsgSound), to, px, py);
+}
+
+// game.message(text [, sound]) - in-game message log (presentation; safe per-client). `sound` false: no sound.
 void Game_Message(const std::string& text, sol::object sound) {
-  Game::AddMessage(text, ResolveSound(sound, kDefaultMsgSound), Tethys::AllPlayers);
+  AddMessageWith(text, sound, Tethys::AllPlayers, 0, 0);
   LOG_MISSION(INFO) << "game.message: " << text;
+}
+
+// game.play_wav(file [, toPlayer]) - a WAV shipped with the mission, by its file name in the mission's own folder,
+// played through Windows (PlaySound) rather than the game's mixer, at the game's sound volume (8- or 16-bit PCM
+// samples scaled as the game attenuates its own sounds), and not at all while the game's sound is off. One at a
+// time: a new one stops the last. True when the file is there and is a WAV, whether or not this machine plays it;
+// false (and a log line) otherwise.
+std::vector<char> gWav;   // the playing WAV's bytes (PlaySound plays from them)
+
+// Scales a RIFF WAVE's PCM samples in place by the game's volume step (-50 * step hundredths of a dB).
+void ScaleWav(std::vector<char>& w, int step) {
+  if (step <= 0) return;
+  const double gain = std::pow(10.0, -50.0 * step / 2000.0);
+  int bits = 0;
+  for (size_t at = 12; at + 8 <= w.size();) {
+    uint32_t len; std::memcpy(&len, w.data() + at + 4, 4);
+    const size_t body = at + 8;
+    if (body + len > w.size()) break;
+    if (std::memcmp(w.data() + at, "fmt ", 4) == 0 && len >= 16) {
+      uint16_t fmt, b; std::memcpy(&fmt, w.data() + body, 2); std::memcpy(&b, w.data() + body + 14, 2);
+      if (fmt != 1) return;   // not PCM: played as it is
+      bits = b;
+    } else if (std::memcmp(w.data() + at, "data", 4) == 0) {
+      if (bits == 8) {
+        for (size_t i = 0; i < len; ++i) {
+          auto& v = reinterpret_cast<unsigned char&>(w[body + i]);
+          v = static_cast<unsigned char>(128 + std::lround((v - 128) * gain));
+        }
+      } else if (bits == 16) {
+        for (size_t i = 0; i + 1 < len; i += 2) {
+          int16_t v; std::memcpy(&v, w.data() + body + i, 2);
+          v = static_cast<int16_t>(std::lround(v * gain));
+          std::memcpy(w.data() + body + i, &v, 2);
+        }
+      }
+      return;
+    }
+    at = body + len + (len & 1);
+  }
+}
+void StopWav() { PlaySoundA(nullptr, nullptr, 0); gWav.clear(); }
+bool Game_PlayWav(const std::string& file, sol::optional<int> toPlayer) {
+  std::string lower = file;
+  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+  if (file.empty() || file.find_first_of("/\\:") != std::string::npos || file.find("..") != std::string::npos ||
+      lower.size() < 5 || lower.compare(lower.size() - 4, 4, ".wav") != 0) {
+    LOG_MISSION(WARNING) << "game.play_wav: '" << file << "' is not a .wav file name in the mission's folder";
+    return false;
+  }
+  const std::string path = ::OP2Lua::Mission::Dir() + "\\" + file;
+  std::ifstream in(path, std::ios::binary);
+  std::vector<char> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (data.size() < 44 || std::memcmp(data.data(), "RIFF", 4) != 0 || std::memcmp(data.data() + 8, "WAVE", 4) != 0) {
+    LOG_MISSION(WARNING) << "game.play_wav: " << path << (data.empty() ? " not found" : " is not a WAV file");
+    return false;
+  }
+  const int to = toPlayer.value_or(Tethys::AllPlayers);
+  if (to != Tethys::AllPlayers && to != Game::LocalPlayer()) return true;
+  const bool on = GameSoundOn() != 0;
+  LOG_MISSION(INFO) << "game.play_wav: " << file << (on ? "" : " not played: the game's sound is off") << " (Sound "
+                    << GameSoundOn() << ", SoundVol " << GameSoundVol() << ")";
+  if (!on) return true;
+  ScaleWav(data, GameSoundVol());
+  PlaySoundA(nullptr, nullptr, 0);   // stop the last one before its bytes go
+  gWav.swap(data);
+  PlaySoundA(gWav.data(), nullptr, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+  return true;
 }
 
 // game.sound(name|id [, toPlayer]) - play a global game sound.
@@ -177,7 +267,7 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
-// game.version() -> "0.8.0", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+// game.version() -> "0.8.1", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
 std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
 
 // game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
@@ -1122,6 +1212,7 @@ void FlushUnitOrders() {
 }
 void ResetUnitOrders() { gOrders.clear(); gMadeTick.clear(); }
 void NoteUnitMade(int unitId) { gMadeTick[unitId] = Game::Tick(); }
+void StopMissionWav() { StopWav(); }
 
 // Gives a unit an order: at once, or for a unit made this tick or the last (whose command state may not be ready:
 // see FlushUnitOrders), queued until it can take it. A newer order replaces one still queued for the unit.
@@ -1469,9 +1560,10 @@ void RegisterBindings(sol::state& lua) {
   // spot of the map in pixels, as the stock missions post them (CPS2's "Microbe growth detected!").
   game.set_function("message_at", [](const std::string& text, sol::object sound, sol::object player, int px, int py) {
     const int to = player.is<sol::lua_nil_t>() ? Tethys::AllPlayers : PlayerNumFrom(player);
-    Game::AddMessage(text, ResolveSound(sound, kDefaultMsgSound), to, px, py);
+    AddMessageWith(text, sound, to, px, py);
     LOG_MISSION(INFO) << "game.message_at: " << text; });
   game.set_function("sound", &Game_Sound);
+  game.set_function("play_wav", &Game_PlayWav);
   game.set_function("rand", &Game_Rand);
   game.set_function("tick", &Game_Tick);
   game.set_function("version", &Game_Version);
