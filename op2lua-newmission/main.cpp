@@ -13,6 +13,7 @@
 //   op2lua-newmission "Test" --stub ../bin/LuaMission.dll
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -131,7 +132,7 @@ int missionTypeFrom(const std::string& name) {
 }
 
 // Mission name -> file base name (alphanumerics only). The DLL base name decides which scripts it
-// loads (MyMission.dll -> MyMission.lua + MyMission.placement.lua).
+// loads (cMyMission.dll -> MyMission.lua + MyMission.placement.lua; see main()).
 std::string baseNameFrom(const std::string& name) {
   std::string b;
   for (unsigned char c : name) {
@@ -227,6 +228,37 @@ function on_init()
 end
 )LUA";
 
+// A multiplayer type: the lobby sets each player's colony, colour and human/AI, so the placement has no players
+// table (a players entry would override the lobby), only what every game starts with.
+const char* kPlacementSkeletonMP = R"LUA(-- __BASE__.placement.lua  -  __NAME__  -  starting layout.
+-- Coordinates are the ones shown on the in-game status bar (hover a tile to read them).
+return {
+  name = "__NAME__", map = "__MAP__", tech = "MULTITEK.TXT", type = "__TYPE__",
+  max_tech = 12, players_count = __PLAYERS__,
+
+  -- No players table: in a multiplayer game the lobby has already set each player's colony and colour.
+
+  units = {
+    -- What every game starts with (player = 1..__PLAYERS__). Bases that depend on the lobby's
+    -- settings (game.initial_units()) are made in on_init instead.
+__UNITS__  },
+
+  beacons = {}, walls = {},
+  regions = {},
+  markers = {},
+}
+)LUA";
+
+const char* kMissionSkeletonMP = R"LUA(-- __BASE__.lua  -  __NAME__  -  mission logic.
+-- See docs/API.md for the full API. Edit freely; this is your mission.
+
+function on_init()
+  -- The lobby's settings: game.initial_units(), game.uses_day_night(), game.uses_morale(),
+  -- game.disasters_enabled(), and each player's .difficulty (the resource level).
+__WIN__
+end
+)LUA";
+
 void printUsage() {
   std::cout <<
     "op2lua-newmission - scaffold a new OP2Lua mission\n\n"
@@ -240,7 +272,8 @@ void printUsage() {
     "  --out     <dir>    output directory (default: ./out)\n"
     "  --stub    <path>   path to LuaMission.dll (default: auto-detect near cwd/exe)\n"
     "  -h, --help         show this help\n\n"
-    "Creates <Base>.dll + <Base>.lua + <Base>.placement.lua (Base = name, alphanumerics only).\n";
+    "Creates c<Base>.dll + <Base>.lua + <Base>.placement.lua (Base = name, alphanumerics only); a multiplayer\n"
+    "type's DLL has no leading c.\n";
 }
 
 }  // namespace
@@ -297,22 +330,44 @@ int main(int argc, char** argv) {
   fs::create_directories(outDir, ec);
   const fs::path outPath = outDir;
 
-  const std::string placement =
-      replaceAll(replaceAll(replaceAll(replaceAll(kPlacementSkeleton, "__BASE__", base), "__NAME__", name),
-                            "__MAP__", map), "__PLAYERS__", std::to_string(players));
-  const std::string mission =
-      replaceAll(replaceAll(kMissionSkeleton, "__BASE__", base), "__NAME__", name);
+  // Outpost 2 lists a DLL whose name starts with c under Colony Games. The core finds cMyMission.dll's scripts
+  // as MyMission.*, dropping a c that comes before a capital; a base that doesn't start with one keeps the c in
+  // the script names too.
+  const bool colony = (missionType == -1);
+  const std::string dllBase = colony ? "c" + base : base;
+  const std::string scriptBase =
+      (colony && !std::isupper(static_cast<unsigned char>(base[0]))) ? dllBase : base;
+
+  std::string placement, mission;
+  if (colony) {
+    placement = replaceAll(replaceAll(replaceAll(replaceAll(kPlacementSkeleton, "__BASE__", scriptBase), "__NAME__", name),
+                                      "__MAP__", map), "__PLAYERS__", std::to_string(players));
+    mission = replaceAll(replaceAll(kMissionSkeleton, "__BASE__", scriptBase), "__NAME__", name);
+  } else {
+    std::string units;
+    for (int p = 1; p <= players; ++p)
+      units += "    { type = \"CommandCenter\", player = " + std::to_string(p) + ", at = { " +
+               std::to_string(20 + 12 * (p - 1)) + ", 20 } },\n";
+    placement = replaceAll(replaceAll(replaceAll(replaceAll(replaceAll(replaceAll(kPlacementSkeletonMP,
+                    "__BASE__", scriptBase), "__NAME__", name), "__MAP__", map), "__TYPE__", type),
+                    "__PLAYERS__", std::to_string(players)), "__UNITS__", units);
+    const std::string win = (missionType == -8)
+        ? "  mission.last_one_standing()   -- the game's own Last One Standing victory, per player"
+        : "  -- Win: this type's victory with trigger.* and mission.victory (docs/API.md, \"Multiplayer missions\").";
+    mission = replaceAll(replaceAll(replaceAll(kMissionSkeletonMP, "__BASE__", scriptBase), "__NAME__", name),
+                         "__WIN__", win);
+  }
 
   bool ok = true;
-  ok &= writeFile(outPath / (base + ".dll"), dll);
-  ok &= writeText(outPath / (base + ".placement.lua"), placement);
-  ok &= writeText(outPath / (base + ".lua"), mission);
+  ok &= writeFile(outPath / (dllBase + ".dll"), dll);
+  ok &= writeText(outPath / (scriptBase + ".placement.lua"), placement);
+  ok &= writeText(outPath / (scriptBase + ".lua"), mission);
   if (!ok) { std::cerr << "error: failed to write output files into " << outPath << "\n"; return 1; }
 
   std::cout << "Created mission \"" << name << "\" in " << outPath.string() << " :\n"
-            << "  " << base << ".dll              (menu name \"" << name << "\", map \"" << map << "\")\n"
-            << "  " << base << ".lua              (edit your logic here)\n"
-            << "  " << base << ".placement.lua    (edit your layout here)\n\n"
+            << "  " << dllBase << ".dll    (menu name \"" << name << "\", map \"" << map << "\")\n"
+            << "  " << scriptBase << ".lua    (edit your logic here)\n"
+            << "  " << scriptBase << ".placement.lua    (edit your layout here)\n\n"
             << "Next: copy all three files into your Outpost 2  OPU/maps  folder, then launch the game.\n"
             << "See the SDK's INSTALL.md for paths and docs/GETTING-STARTED.md for the walkthrough.\n";
   return 0;

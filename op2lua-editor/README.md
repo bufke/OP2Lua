@@ -22,7 +22,10 @@ write the `<Name>.lua` (the logic), and `OP2LuaCore.dll` runs them in-game.
 - **Mission properties** - name, map, tech, mission type (Colony, Tutorial, AutoDemo or a multiplayer type),
   players, max tech level; the mission DLL is patched to match.
 - **New Mission** scaffolding - clones the stub DLL and patches its name, map, type and player count, writes
-  skeleton scripts (a multiplayer type gets a lobby-driven skeleton).
+  skeleton scripts (a multiplayer type gets a lobby-driven skeleton), straight into the game's `OPU\maps\LUA`. A
+  Colony mission's DLL is `c<Base>.dll`, so Outpost 2 lists it under Colony Games.
+- **Test in OP2 (F5)** - copies the open mission into `OPU\maps\LUA` and starts Outpost 2 straight into it
+  (needs `op2launcher.exe` in the `OPU` folder).
 - **Open a mission** from File > Open Mission, the command line, or by dropping its `.lua` on the map.
 - Coordinates match the in-game status bar (what you place is where it lands).
 

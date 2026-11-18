@@ -38,6 +38,8 @@ struct Region {
 // FlushUnitOrders() is called at the start of each scheduler pump; ResetUnitOrders() on load.
 void FlushUnitOrders();
 void ResetUnitOrders();
+// Notes the tick a unit was made, so its first orders wait until it can take them (FlushUnitOrders).
+void NoteUnitMade(int unitId);
 
 // Triggers made from Lua (trigger.* with an `on=` function) name the stub's OnTrigger export; OPU passes
 // it the trigger that fired, and FireTrigger runs that trigger's Lua function. ResetTriggers() on load

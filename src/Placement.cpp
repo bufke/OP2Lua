@@ -381,10 +381,8 @@ void ApplyMarkers(sol::state& L, sol::table& luaMarkers) {
     const Location loc = at ? LocFromTable(*at) : Location();
     Game::CreateMarker(loc, MarkerTypeFromName(Field<std::string>(m, "type", "Circle")));
     sol::table out = L.create_table();
-    // loc is in OP2 engine-internal (padded-grid) coordinates, published as-is on
-    // purpose: the engine requires the internal offset, same convention as the C++
-    // mission SDK. Placement in-game is correct.
-    out["x"] = loc.x; out["y"] = loc.y;
+    // Published in author (status-bar) coordinates, as every call that takes a location reads them back.
+    out["x"] = loc.x - GameMap::GetPaddingWidth() + 1; out["y"] = loc.y + 1;
     luaMarkers[kv.first.as<std::string>()] = out;
   }
 }

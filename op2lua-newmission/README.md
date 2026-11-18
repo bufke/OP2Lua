@@ -1,7 +1,7 @@
 # op2lua-newmission
 
 A tiny **cross-platform** console tool that scaffolds a new OP2Lua mission: it clones the prebuilt
-mission stub (`LuaMission.dll`), byte-patches its menu name and map, and writes starter
+mission stub (`LuaMission.dll`), byte-patches its menu name, map, type and player count, and writes starter
 `<Mission>.lua` + `<Mission>.placement.lua` next to it. No game compiler involved.
 
 It's the portable equivalent of the SDK's `tools/new-mission.ps1` (which stays for quick Windows
@@ -16,9 +16,10 @@ cmake -B build
 cmake --build build --config Release
 ```
 
-The binary is `op2lua-newmission` (`.exe` on Windows). Prebuilt **Windows** (`op2lua-newmission.exe`)
-and **Linux** (`op2lua-newmission`, x86-64 static) binaries ship in the **OP2LuaSDK** under `tools/`,
-so authors don't have to build it. On Linux, `chmod +x op2lua-newmission` first.
+The binary is `op2lua-newmission` (`.exe` on Windows). A prebuilt **Windows** binary
+(`op2lua-newmission.exe`) ships in the **OP2LuaSDK** under `tools/`, so authors don't have to build it.
+The SDK's **Linux** build (`op2lua-newmission`, x86-64 static) is older: it has `--map` only and names the
+DLL without the `c`. On Linux, `chmod +x op2lua-newmission` first.
 
 ### Cross-compiling the Linux binary from Windows
 
@@ -51,10 +52,15 @@ op2lua-newmission "Duel" --map on2_02.map --players 2 --type LastOneStanding
 It writes three files (base name = the mission name with non-alphanumerics removed):
 
 ```
-<Base>.dll              the mission OP2 lists (menu name + map byte-patched)
+c<Base>.dll             the mission OP2 lists under Colony Games (menu name + map byte-patched)
 <Base>.lua              starter logic (win/lose already wired)
 <Base>.placement.lua    starter layout
 ```
+
+The core finds `c<Base>.dll`'s scripts as `<Base>.*` by dropping a `c` that comes before a capital, so a
+base that doesn't start with a capital (`convoyrun`) keeps the `c` on the scripts too (`cconvoyrun.lua`).
+A multiplayer `--type` writes `<Base>.dll` with no `c` (the lobby lists it), a placement without a
+`players` table (the lobby sets the colonies) and a mission that starts the type's victory.
 
 Copy all three into your Outpost 2 `OPU/maps` folder and launch the game. See the SDK's
 `INSTALL.md` and `docs/GETTING-STARTED.md`.

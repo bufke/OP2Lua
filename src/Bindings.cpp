@@ -14,6 +14,7 @@
 // State-changing calls go through Tethys (synced commands); no wall-clock, no math.random/os/io.
 
 #include <algorithm>
+#include <climits>
 #include <cstring>
 #include <array>
 #include <deque>
@@ -94,6 +95,10 @@ constexpr int kGaiaPlayer     = 6;               // the "native"/Gaia player tha
 enum class OrderKind { Move, AttackUnit, AttackGround };
 struct DeferredOrder { Unit unit; OrderKind kind; int x; int y; Unit target; int attempts = 0; int readyTick = -1; };
 std::vector<DeferredOrder> gOrders;
+// The tick each unit made while the mission runs was made on (create_unit and the game's OnCreateUnit event), by unit
+// id. Only orders to a unit made this tick or the last wait in gOrders; the rest are given at once, as a mission DLL
+// gives them.
+std::map<int, int> gMadeTick;
 
 // Resolve a sound argument: a name ("Savant4"), a raw integer SoundID, or nil -> default.
 Tethys::SoundID ResolveSound(const sol::object& s, Tethys::SoundID dflt) {
@@ -125,14 +130,19 @@ Location LocFrom(const sol::object& o) {
   return Location();
 }
 
-// A MapRect (internal coords) from a Region, a Unit's footprint, a {x1,y1,x2,y2} rect, or a {x,y}
-// single tile (author coords -> GameMap::At, which wraps). Used by area orders (build_wall / doze / salvage) and
-// the rectangle queries (units_in_rect, rand_point, find_emp_missile_target).
+// A MapRect (internal coords) from a Region, a Unit's footprint, a {x1,y1,x2,y2} rect, a {x,y} single tile (author
+// coords -> GameMap::At, which wraps), or a { x =, y = [, raw = true] } single tile read as LocFrom reads it (what
+// region:center() and find_place() return). Used by area orders (build_wall / doze / salvage) and the rectangle
+// queries (units_in_rect, rand_point, find_emp_missile_target).
 MapRect RectFrom(const sol::object& o) {
   if (o.is<Region>()) { const Region& r = o.as<Region>(); return MapRect(r.x1, r.y1, r.x2, r.y2); }
   if (o.is<Unit>())   { return o.as<Unit>().GetRect(); }
   if (o.is<sol::table>()) {
     sol::table t = o.as<sol::table>();
+    if (t["x"].valid() && t["y"].valid()) {
+      const Location p = LocFrom(o);
+      return MapRect(p.x, p.y, p.x, p.y);
+    }
     if (t.size() >= 4) {
       const Location a = GameMap::At(t.get_or(3, 0), t.get_or(4, 0)), b = GameMap::At(t.get_or(1, 0), t.get_or(2, 0));
       return MapRect(std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x), std::max(a.y, b.y));
@@ -249,7 +259,7 @@ sol::table Game_CreateUnit(sol::table opts, sol::this_state ts) {
                           : GameMap::FindUnitPlacementLocation(at, type);
     if (spot.x < 0) spot = Location(at.x + (i % width), at.y + (i / width));   // finder failed -> fallback
     Unit u = Game::CreateUnit(type, spot, owner, weapon, dir, lights);
-    if (u.IsValid()) ++created;
+    if (u.IsValid()) { ++created; NoteUnitMade(u.GetID()); }
     out[i + 1] = u;
   }
   // AI spawns -> the AI log; human-player reinforcements -> the mission log.
@@ -607,6 +617,21 @@ sol::table Game_UnitsInRange(sol::object at, int range, sol::this_state ts) {
   sol::table out = L.create_table();
   int i = 1;
   for (Unit u : Tethys::TethysAPI::InRangeEnumerator(LocFrom(at), range)) out[i++] = u;
+  return out;
+}
+
+// game.units_closest(at [, count]) -> the units of every player in the order the game's ClosestEnumerator gives them,
+// nearest `at` first by its own measure (0x47A7B0, 0x47A7F0), ties in its order; at most `count` of them. For a
+// mission that walks the units nearest a spot as a mission DLL does with ClosestEnumerator.
+sol::table Game_UnitsClosest(sol::object at, sol::optional<int> count, sol::this_state ts) {
+  sol::state_view L(ts);
+  sol::table out = L.create_table();
+  const int most = count.value_or(INT_MAX);
+  int i = 0;
+  for (const auto& r : Tethys::TethysAPI::ClosestEnumerator(LocFrom(at))) {
+    if (i >= most) break;
+    out[++i] = r.first;
+  }
   return out;
 }
 
@@ -1095,7 +1120,25 @@ void FlushUnitOrders() {
   if (issued > 0) LOG_AI(INFO) << "issued " << issued << " queued unit order(s) at tick " << now;
   gOrders.swap(retry);
 }
-void ResetUnitOrders() { gOrders.clear(); }
+void ResetUnitOrders() { gOrders.clear(); gMadeTick.clear(); }
+void NoteUnitMade(int unitId) { gMadeTick[unitId] = Game::Tick(); }
+
+// Gives a unit an order: at once, or for a unit made this tick or the last (whose command state may not be ready:
+// see FlushUnitOrders), queued until it can take it. A newer order replaces one still queued for the unit.
+static void Order(DeferredOrder o) {
+  // The game's Unit::DoMove (0x476240) ignores a move to a tile off its grid (x outside the padded width at 0x54F808,
+  // y outside the height at 0x54F810), so the unit keeps the order it had; a mission's off-map move does the same here.
+  if (o.kind == OrderKind::Move &&
+      (o.x < 0 || o.x >= *reinterpret_cast<const int*>(0x54F808) || o.y < 0 ||
+       o.y >= *reinterpret_cast<const int*>(0x54F810))) return;
+  const int id = o.unit.GetID();
+  gOrders.erase(std::remove_if(gOrders.begin(), gOrders.end(), [id](const DeferredOrder& q) { return q.unit.GetID() == id; }),
+                gOrders.end());
+  const auto made = gMadeTick.find(id);
+  const bool fresh = (made != gMadeTick.end()) && (Game::Tick() - made->second <= 1);
+  if (!fresh && o.unit.IsLive() && IssueOrderGuarded(o)) return;
+  gOrders.push_back(o);
+}
 
 void ResetTriggers() { gTriggerFns.clear(); }
 
@@ -1504,6 +1547,13 @@ void RegisterBindings(sol::state& lua) {
   });
   game.set_function("units_in_range", &Game_UnitsInRange);
   game.set_function("units_in_rect",  &Game_UnitsInRect);
+  game.set_function("units_closest",  &Game_UnitsClosest);
+  // game.force_robot_command(on) - every player's robot units work without a Robot Command Center (the game's
+  // forceEnableRCC flag, game state +0x3C), for a mission that takes the RCC away.
+  game.set_function("force_robot_command", [](bool on) { Tethys::GameImpl::GetInstance()->forceEnableRCC_ = on; });
+  // game.clear_cheated() - clears the tick of the last game-option change (game state +0x88), which a mission's
+  // forced morale sets, so the game doesn't mark the game "CHEATED GAME!".
+  game.set_function("clear_cheated", [] { Tethys::GameImpl::GetInstance()->tickOfLastSetGameOpt_ = 0; });
   game.set_function("rand_point", &Game_RandPoint);
   game.set_function("find_emp_missile_target", &Game_FindEmpMissileTarget);
   // game.create_emp_missile(target, from, player): an EMP missile of `player` flying from `from` to `target`
@@ -1671,22 +1721,22 @@ void RegisterBindings(sol::state& lua) {
       "owner",       sol::property([](const Unit& u) { return u.GetOwner(); }),
       "valid",       sol::property([](const Unit& u) { return u.IsValid(); }),
       "move",        [](Unit& u, sol::object loc) { const Location p = LocFrom(loc);
-                                                    gOrders.push_back({ u, OrderKind::Move, p.x, p.y, Unit() }); },
+                                                    Order({ u, OrderKind::Move, p.x, p.y, Unit() }); },
       // attack_move(target): if given a unit, hunt and attack it; if given a location, advance there
       // aggressively (DoAttack-to-ground, firing en route). NOTE: a plain DoMove (CmdMove) on a unit
       // freshly created this/last tick crashes OP2's pathfinder - DoAttack does not - so the location
       // case stays AttackGround (as Move it breaks missions that spawn defenders).
       "attack_move", [](Unit& u, sol::object tgt) {
                        if (tgt.is<Unit>()) { Unit t = tgt.as<Unit>(); const Location p = t.GetLocation();
-                                             gOrders.push_back({ u, OrderKind::AttackUnit, p.x, p.y, t }); }
+                                             Order({ u, OrderKind::AttackUnit, p.x, p.y, t }); }
                        else                { const Location p = LocFrom(tgt);
-                                             gOrders.push_back({ u, OrderKind::AttackGround, p.x, p.y, Unit() }); } },
+                                             Order({ u, OrderKind::AttackGround, p.x, p.y, Unit() }); } },
       // attack(target): attack a specific unit, or (with a location) deliberately attack the ground.
       "attack",      [](Unit& u, sol::object tgt) {
                        if (tgt.is<Unit>()) { Unit t = tgt.as<Unit>(); const Location p = t.GetLocation();
-                                             gOrders.push_back({ u, OrderKind::AttackUnit, p.x, p.y, t }); }
+                                             Order({ u, OrderKind::AttackUnit, p.x, p.y, t }); }
                        else                { const Location p = LocFrom(tgt);
-                                             gOrders.push_back({ u, OrderKind::AttackGround, p.x, p.y, Unit() }); } },
+                                             Order({ u, OrderKind::AttackGround, p.x, p.y, Unit() }); } },
       // Cargo Truck contents.  unit:set_cargo("RareMetal", 1000)  /  unit.cargo  /  unit.cargo_amount
       "set_cargo",    [](Unit& u, const std::string& cargo, sol::optional<int> amount) {
                         const int ct = CargoTypeFromName(cargo);
@@ -1746,8 +1796,8 @@ void RegisterBindings(sol::state& lua) {
                         else LOG_MISSION(WARNING) << "develop: unknown type '" << type << "'"; },
       // factory:set_factory_cargo(bay, type [, cargoOrWeapon]) - preload a kit into a 1-based bay (1..6).
       "set_factory_cargo", [](Unit& u, int bay, const std::string& type, sol::optional<std::string> extra) {
-                        if (u.IsLive()) u.SetFactoryCargo(bay - 1, MapIdFromName(type),
-                                                          extra ? MapIdFromName(*extra) : MapID::None); },
+                        const MapID t = MapIdFromName(type);   // a Guard Post kit's weapon is its turret version
+                        if (u.IsLive()) u.SetFactoryCargo(bay - 1, t, extra ? WeaponFor(t, MapIdFromName(*extra)) : MapID::None); },
       // factory:transfer_cargo(bay) - move the 1-based bay's cargo to the docked vehicle. ONLY call when
       // a vehicle is actually on the dock (see unit_on_dock) - calling it otherwise crashes OP2.
       "transfer_cargo", [](Unit& u, int bay) { if (u.IsLive()) GuardedTransferCargo(u, bay - 1); },
@@ -1982,6 +2032,18 @@ void RegisterBindings(sol::state& lua) {
       "solar_satellites", sol::property(
         [](const LuaPlayer& p) { const auto* i = _Player(p.num).GetImpl(); return i ? int(i->satellites_.numSolarSatellites) : 0; },
         [](LuaPlayer& p, int n) { if (auto* i = _Player(p.num).GetImpl()) i->satellites_.numSolarSatellites = static_cast<uint32_t>(std::clamp(n, 0, 15)); }),
+      // player:set_launched(type, on): marks a starship module or cargo (IonDriveModule ... ChildrenModule, the
+      // Skydock among them) launched or not, for a mission that starts with the starship in orbit. Each is one bit,
+      // 13 + (type - IonDriveModule), of the word the EDWARD and Solar counts share; satellite_count reads it back.
+      "set_launched", [](LuaPlayer& p, const std::string& type, bool on) {
+        const int t = static_cast<int>(MapIdFromName(type));
+        const int first = static_cast<int>(MapID::IonDriveModule), last = static_cast<int>(MapID::ChildrenModule);
+        if (t < first || t > last) throw sol::error("set_launched: not a starship module or cargo: " + type);
+        if (auto* i = _Player(p.num).GetImpl()) {
+          auto& word = reinterpret_cast<uint32_t&>(i->satellites_);
+          const uint32_t bit = 1u << (13 + t - first);
+          word = on ? (word | bit) : (word & ~bit);
+        } },
 
       // ---- technology ----
       // has_tech / mark_research validate the tech id first - a bad id crashes the engine's lookup

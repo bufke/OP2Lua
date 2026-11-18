@@ -7,8 +7,8 @@ text files instead of a hand-compiled C++ mission DLL:
 
 | File | What it is |
 |---|---|
-| `cMyMission.placement.lua` | Players, starting units, resources, beacons, named regions. The starting layout. |
-| `cMyMission.lua` | What happens during the mission (timers, attack waves, win/lose, reactions). |
+| `MyMission.placement.lua` | Players, starting units, resources, beacons, named regions. The starting layout. |
+| `MyMission.lua` | What happens during the mission (timers, attack waves, win/lose, reactions). |
 
 The author edits Lua and never touches a compiler. (A tiny prebuilt stub DLL ships *with* the
 mission - see the architecture below - but no one compiles it per mission.)
@@ -34,15 +34,14 @@ its own debug log.
 
 **Download the SDK + sample pack:** https://github.com/leviathan400/OP2LuaSDK/releases
 
-See [`docs/CHANGES.md`](docs/CHANGES.md) for the full feature list and
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for what's next.
+See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for what each release changed.
 
 ---
 
 ## How it works - two DLLs
 
 OP2 builds its mission menu by **statically reading every mission DLL's exported `DescBlock`/
-`LevelDesc`** - so each mission needs its own DLL. Rather than bake the ~800 KB Lua runtime into
+`LevelDesc`** - so each mission needs its own DLL. Rather than bake the ~2.7 MB Lua runtime into
 every mission, OP2Lua splits it:
 
 - **`OP2LuaCore.dll`** - the shared runtime: the Lua interpreter, the sol2 ↔ Tethys bindings, the
@@ -74,6 +73,7 @@ OP2Lua/
     Placement.cpp             - placement.lua -> players/units/beacons + named handles
     LuaHost.cpp               - embeds Lua, runs scripts, scheduler preamble
     Bindings.cpp              - the author-facing API, bound to Tethys via sol2
+    Hackaray.cpp              - the opt-in hackaray.* functions (Hackaray.dll's nuke patch and end videos)
     Names.cpp                 - name <-> MapID / SoundID tables
     ErrorHandling.cpp         - crash reporter / native stack traces
     Log.cpp                   - dependency-free logger + reliable build stamp
@@ -82,9 +82,10 @@ OP2Lua/
     LuaMission.cpp            - the per-mission stub (template; DescBlock byte-patched per mission)
   op2lua-newmission/          - cross-platform C++ console tool that scaffolds a new mission
                                 (clone+patch the stub + skeleton scripts); compiled exe ships in the SDK
-  docs/                       - API.md, FILE-FORMAT.md, ARCHITECTURE.md, DEPLOY.md, CHANGES.md, ROADMAP.md (all docs except README)
-  dist/                       - packaged demo pack (core + stub DLLs + scripts + README, zipped)
-  third_party/                - Tethys (vendored), Lua 5.4.7, sol2  (see third_party/README.md)
+  op2lua-editor/              - OP2LuaEditor (VB.NET, Windows): edit a mission's layout over its map
+  cmake/                      - the clang-cl 32-bit toolchain file
+  docs/                       - API.md, FILE-FORMAT.md, ARCHITECTURE.md, LOGGING.md, CHANGELOG.md
+  third_party/                - Tethys (vendored), Lua 5.4.7, sol2 3.5.0  (see third_party/README.md)
 ```
 
 ---
@@ -112,14 +113,16 @@ the core into your game folder on each build. (From a 64-bit host, configure ins
 The 1.4.1 installer unpacks the game's content into an **`OPU`** folder under the install root.
 
 1. Put **`OP2LuaCore.dll`** in the `OPU` folder (e.g. `D:\Outpost 2\OPU\`). Ships once, runs every mission.
-2. Put each mission's **three files** - its stub DLL (e.g. `MyMission.dll`), `MyMission.lua`, and
+2. Put each mission's **three files** - its stub DLL (e.g. `cMyMission.dll`), `MyMission.lua`, and
    `MyMission.placement.lua` - into `OPU\maps\` (alongside any custom `.map`). The `.lua` files
-   must sit next to the DLL (same base name).
-3. Launch the game - the mission appears in the list like any other.
+   must sit next to the DLL, named after it with or without the DLL's leading `c`
+   ([FILE-FORMAT.md](docs/FILE-FORMAT.md)).
+3. Launch the game - the mission appears in the list like any other. Outpost 2 lists a DLL whose name
+   starts with `c` under Colony Games; a multiplayer mission's DLL needs no `c`.
 
 > On older slim / 1.3.x installs (no `OPU` folder), the core goes next to `Outpost2.exe` and mission
 > files sit with the other mission DLLs. The rule is constant: **runtime with the game, a mission's
-> `.lua` next to its `.dll`.**
+> `.lua` next to its `.dll`.** The unit events (`on_create_unit` and the rest) need OPU 1.4.0 or later.
 
 The complete sample missions (and the `feature-test` + `smoke-test` API-coverage missions) live in the **OP2LuaSDK**
 under [`OP2LuaSDK/samples/`](https://github.com/leviathan400/OP2LuaSDK/tree/main/samples) - kept there as the single source of truth so the
@@ -127,9 +130,10 @@ demos can't drift out of sync. For making missions without this repo, see the **
 runtime + docs + samples + a `new-mission` scaffolder) - authors never build anything here.
 
 Logs are written to `Outpost2\OPU\logs\` (each session stamped with the OP2Lua version and the
-DLL's build time): a shared **`OP2Lua.log`** (core/engine record across all missions) plus a
+DLL's build time): a shared **`OP2Lua.log`** (core/engine record across all missions), a
 per-mission **`OP2Lua-<MissionDll>.log`** that carries that mission's own `print()` debug and
-activity. Errors logged to both.
+activity, and `OP2Lua-<MissionDll>-AI.log` for `log.ai(...)`. A crash puts a one-line summary in the
+shared log and the full dump in the mission's. See [`docs/LOGGING.md`](docs/LOGGING.md).
 
 ---
 
@@ -137,7 +141,8 @@ activity. Errors logged to both.
 
 - **`op2lua-newmission/`** - a cross-platform C++ console tool that scaffolds a new mission (clones +
   byte-patches the stub, writes skeleton scripts). It's the manual stand-in for the `.opm` converter;
-  prebuilt Windows + Linux binaries ship in the OP2LuaSDK (with `new-mission.ps1` for Windows).
+  a prebuilt Windows exe ships in the OP2LuaSDK (with `new-mission.ps1`, and an older Linux build
+  that has only `--map`).
 - **OP2MissionEditor / OP2OpmTools** (the `.opm` format) - OP2Lua consumes a `placement.lua`
   *generated from* a `.opm`. The converter belongs on the editor side (it already transpiles
   `.opm` → C++; emitting Lua + byte-patching the stub's `DescBlock`/strings is the same kind of tool).

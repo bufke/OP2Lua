@@ -8,8 +8,9 @@ This document records the design and the reasoning behind it, so future contribu
 A mission is two files with a clean separation of concerns:
 
 - **`placement.lua` - the nouns.** Where everything starts: players, their colony/AI/resources,
-  pre-placed units and structures, beacons, walls, and named regions/markers. It is a **generated
-  data table**, produced by OP2MissionEditor from a `.opm`. Authors never hand-edit it.
+  pre-placed units and structures, beacons, walls, and named regions/markers. It is a **data
+  table**, usually written by a tool (OP2LuaEditor, `op2lua-newmission`, a converter) and edited in
+  OP2LuaEditor or by hand.
 - **`mission.lua` - the verbs.** What *happens*: timers, attack waves, win/lose conditions,
   reactions to game events. Written by the author, by hand.
 
@@ -31,8 +32,8 @@ Option 3 wins on every axis we care about:
 
 - **No JSON parser in the C++ runtime** - Lua parses its own tables natively. The runtime has
   exactly **one** binding layer (sol2 → Tethys), not two.
-- **Clean regeneration** - `placement.lua` is pure regenerated *data*, never hand-edited, so the
-  editor can overwrite it freely. Author logic lives in a separate `mission.lua`.
+- **Clean regeneration** - `placement.lua` is pure *data*, so a tool can rewrite it freely (OP2LuaEditor
+  keeps its comments). Author logic lives in a separate `mission.lua`.
 - **Uniform mental model** - everything is "just Lua," fully inspectable.
 
 The runtime flow is therefore:
@@ -65,9 +66,9 @@ equivalents, so the obvious code is automatically correct:
 | Desync risk | What we do |
 |---|---|
 | Wall-clock time / frame timing | No clock access. Scheduling is **tick-based** (`after`/`every`/`when`). |
-| Unsynced randomness | `math.random` is removed. The only randomness is `game.rand`, routed through the engine's **synchronized** RNG. |
+| Unsynced randomness | `math.random` and `math.randomseed` are removed. The only randomness is `game.rand`, routed through the engine's **synchronized** RNG. |
 | Hash-order iteration | Helpers iterate in a **deterministic order** (sorted by ID), never raw table/hash order. |
-| File / OS / environment | `io`, `os`, and arbitrary `require` are stripped from the sandbox. |
+| File / OS / environment | `io`, `os`, `package`/`require`, `dofile`, `loadfile` and `load` are not in the sandbox. |
 | Per-client divergence | Simulation-changing actions go through Tethys calls that issue **synced commands**; presentation (messages, camera, music) may be local. |
 
 An author writes `game.rand(...)` because it's the only random there is - and gets multiplayer
@@ -127,20 +128,20 @@ Because the `lua_State` is rebuilt per mission, every mission starts from a clea
 environment - no leakage between missions, and a script error is caught and logged, never crashing
 the game.
 
-### Diagnostics: two log channels
+### Diagnostics: three log sinks
 
-Every log line is tagged `kCore` or `kMission` and tee'd to up to two files:
+Every log line goes to exactly one of three files (`Log.h`: Main, Mission, AI):
 
-- **`OP2Lua.log`** (master) - opened once, persists across the session, receives **core** lines
-  only: lifecycle (load, version/build stamp, placement apply) and all errors/crashes. A mission's
-  own output never lands here, so it stays a clean engine record (a 90-wave mission won't flood it
-  with per-spawn lines).
-- **`OP2Lua-<base>.log`** (per mission) - re-pointed on each load, receives **both** channels: the
-  core context for that run *and* the mission's own output (author `print()`, `game.message`,
-  `create_unit`, `mission.win/lose`). This is the mission author's working log.
+- **`OP2Lua.log`** (Main) - opened once, persists across the session: lifecycle (load, version/build
+  stamp, placement apply) and a one-line summary of a crash. A mission's own output never lands here,
+  so it stays a clean engine record.
+- **`OP2Lua-<base>.log`** (Mission) - re-pointed on each load: the mission's own output (author `print()`,
+  `game.message`, `create_unit`, `mission.win/lose`), its errors and a crash's full dump. This is the
+  mission author's working log.
+- **`OP2Lua-<base>-AI.log`** (AI) - `log.ai(...)` and the scripted-unit activity, made only when used.
 
-Errors are `kCore`, so they appear in both - a failure is recorded centrally and shown to the
-author. The split keeps a newbie's debug `print()` in their own log without polluting the shared one.
+The split keeps a newbie's debug `print()` in their own log without polluting the shared one. The
+convention every mission follows is in [LOGGING.md](LOGGING.md).
 
 ## `placement.lua` schema
 
@@ -164,11 +165,11 @@ return {
     [1] = { colony="Eden",     human=true,  color="Blue",
             resources = { food=1000, kids=10, workers=14, scientists=8,
                           common_ore=0, rare_ore=0, tech_level=0 } },
-    [2] = { colony="Plymouth", human=false, color="Red", bot="Balanced" },
+    [2] = { colony="Plymouth", human=false, color="Red" },
   },
 
   -- coordinates are in-game / status-bar coordinates (what OP2MissionEditor shows);
-  -- the runtime translates them to OP2's internal grid via GameMap::At at load time.
+  -- the runtime translates them to OP2's internal grid at load time.
   units = {
     { name="enemy_cc", type="CommandCenter", player=2, at={93,39} },
     { type="Tiger", player=2, at={95,40}, weapon="Microwave", health=1.0, lights=true },
@@ -196,8 +197,8 @@ appear in the editor, the `.opm`, the `.lua`, and the in-game status bar.
 │  visual placement        │          │  .opm → placement.lua                  │
 └──────────────────────────┘          │  + clone LuaMission.dll, patch DescBlock│
                                        └───────────────┬────────────────────────┘
-   author writes mission.lua                           │  maps\<mission>\:
-                                                        │   <Mission>.dll + placement.lua + mission.lua + .map
+   author writes <Mission>.lua                         │  OPU\maps\ (or a folder under it):
+                                                        │   c<Mission>.dll + <Mission>.placement.lua + <Mission>.lua
                                                         ▼
    ┌──────────────────────────┐  forwards   ┌──────────────────────────────────┐
    │ LuaMission.dll (stub)    │ ──────────▶ │ OP2LuaCore.dll (shared runtime)  │

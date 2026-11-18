@@ -5,6 +5,26 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+### Added
+
+- `game.units_closest`, `game.force_robot_command`, `game.clear_cheated`, `player:set_launched`.
+
+### Changed
+
+- `move` / `attack` / `attack_move` go out at once; only a unit made this tick or the last has its order held
+  until it can take it. A move to a tile off the map's grid is ignored, as the game does.
+
+### Fixed
+
+- Area arguments (`build_wall`, `doze`, `units_in_rect`, `rand_point`, `set_rect`, ...) take a `{ x =, y = }` point
+  and a raw tile; a named point became tile 1,1.
+- `markers[name]` is in status-bar coordinates, as documented (it was the game's internal tile).
+- `math.random`, `math.randomseed`, `dofile`, `loadfile` and `load` are removed from the sandbox, as documented.
+- An empty weapon, kit, pad or factory bay reads `"None"`; `set_factory_cargo` gives a Guard Post kit its turret.
+- `op2lua-newmission` and OP2LuaEditor's New Mission name a Colony mission's DLL `c<Base>.dll`; a multiplayer
+  `--type` gets the lobby skeleton.
+- docs: API.md checked against the code (defaults, returns, every callback, a *Names* section); other docs updated.
+
 ## [0.8.0] - 2026-11-18
 
 The full list is in CHANGES.md under [0.8.0].

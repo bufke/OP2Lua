@@ -87,6 +87,8 @@ std::string NameFromMapId(MapID id) {
     // A Guard Post's turret versions read back under the names that make them (see WeaponFor).
     m.emplace(static_cast<int>(MapID::StarflareGP), "Starflare");
     m.emplace(static_cast<int>(MapID::SupernovaGP), "Supernova");
+    // An empty slot (no weapon, kit, rocket or cargo) reads "None", the name that sets one.
+    m.emplace(static_cast<int>(MapID::None), "None");
     return m;
   }();
   const auto it = kById.find(static_cast<int>(id));

@@ -719,10 +719,11 @@ Partial Public Class fMain
                 Return
             End Try
 
-            ' Keep the sibling <Base>.dll's name/map exports in sync (OP2 reads these directly).
+            ' Keep the sibling c<Base>.dll's (or <Base>.dll's) name/map exports in sync (OP2 reads these directly).
             Dim baseName As String = Path.GetFileName(currentPlacementFile)
             If baseName.ToLowerInvariant().EndsWith(".placement.lua") Then baseName = baseName.Substring(0, baseName.Length - ".placement.lua".Length)
-            Dim dllPath As String = Path.Combine(Path.GetDirectoryName(currentPlacementFile), baseName & ".dll")
+            Dim dllPath As String = Path.Combine(Path.GetDirectoryName(currentPlacementFile), "c" & baseName & ".dll")
+            If Not File.Exists(dllPath) Then dllPath = Path.Combine(Path.GetDirectoryName(currentPlacementFile), baseName & ".dll")
             Dim dllNote As String = ""
             If File.Exists(dllPath) Then
                 Try
@@ -1288,9 +1289,14 @@ Partial Public Class fMain
                 Return
             End If
 
-            ' OP2 1.4.1 loads missions flat from OPU\maps\LUA - write the three files straight in there.
+            ' OP2 1.4.1 loads missions flat from OPU\maps\LUA - write the three files straight in there. Outpost 2
+            ' lists a DLL whose name starts with c under Colony Games; the core finds cMyMission.dll's scripts as
+            ' MyMission.*, dropping a c before a capital, so a base without a leading capital keeps the c throughout.
+            Dim colony As Boolean = Not PlacementText.IsMultiplayerType(f.MissionTypeName)
+            Dim dllBase As String = If(colony, "c" & base, base)
+            If colony AndAlso Not Char.IsUpper(base(0)) Then base = dllBase
             Dim outDir As String = Path.Combine(My.Settings.OP2Path, "OPU", "maps", "LUA")
-            Dim dllOut As String = Path.Combine(outDir, base & ".dll")
+            Dim dllOut As String = Path.Combine(outDir, dllBase & ".dll")
             Dim placementOut As String = Path.Combine(outDir, base & ".placement.lua")
             Dim scriptOut As String = Path.Combine(outDir, base & ".lua")
 
@@ -1332,7 +1338,7 @@ Partial Public Class fMain
             If LoadMission(placementOut) Then
                 Text = ApplicationName & " - " & f.MissionName
                 MessageBox.Show("Created mission """ & f.MissionName & """ in:" & vbCrLf & outDir & vbCrLf & vbCrLf &
-                                base & ".dll   (menu name, map, type and players patched)" & vbCrLf &
+                                dllBase & ".dll   (menu name, map, type and players patched)" & vbCrLf &
                                 base & ".lua   (your logic)" & vbCrLf &
                                 base & ".placement.lua   (your layout)" & vbCrLf & vbCrLf &
                                 "Those three files are the mission - copy them where Outpost 2 loads missions to play.",

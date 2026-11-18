@@ -28,15 +28,19 @@ void LuaHost::Init() {
   // outstanding sol references (Mission::Reset) before calling this.
   lua_ = sol::state();
 
-  // Open the standard libraries we consider safe.
-  // Phase 6 (multiplayer hardening) will trim this further - in particular `io`, `os`,
-  // `package`/`require` of arbitrary files, and `math.random*` must be removed so missions
-  // cannot introduce desync sources. (See ROADMAP.md.)
+  // The standard libraries a mission may use: no io, os or package. math.random draws from a seed each machine
+  // picks for itself, and dofile / loadfile / load run code from outside the mission's own files, so they go too;
+  // game.rand() is the multiplayer-safe random.
   lua_.open_libraries(
       sol::lib::base,
       sol::lib::string,
       sol::lib::table,
       sol::lib::math);
+  lua_["math"]["random"] = sol::lua_nil;
+  lua_["math"]["randomseed"] = sol::lua_nil;
+  lua_["dofile"] = sol::lua_nil;
+  lua_["loadfile"] = sol::lua_nil;
+  lua_["load"] = sol::lua_nil;
 
   RegisterBindings(lua_);
 
