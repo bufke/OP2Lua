@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "ApiTypes.h"
+#include "Campaign.h"
 #include "Hackaray.h"
 #include "LuaHost.h"
 #include "Log.h"
@@ -267,7 +268,7 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
-// game.version() -> "0.8.2", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+// game.version() -> "0.8.3", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
 std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
 
 // game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
@@ -1956,8 +1957,14 @@ void RegisterBindings(sol::state& lua) {
                if (u.GetType() != MapID::MiningBeacon) return "";
                auto*const mo = u.GetMapObject<Tethys::MapObj::MiningBeacon>();
                return mo ? (static_cast<int>(mo->GetOreType()) == 1 ? "Rare" : "Common") : ""; }),
-      // factory_cargo(bay): the kit type name in a 1-based factory bay ("None" if empty) - "what's in my SF".
-      "factory_cargo", [](const Unit& u, int bay) { return NameFromMapId(u.GetFactoryCargo(bay - 1).unitType); },
+      // factory_cargo(bay) -> the kit type name in a 1-based factory bay ("None" if empty), and its weapon or cargo
+      // (a Guard Post kit's turret, read back under the name set_factory_cargo takes), nil when it has none.
+      "factory_cargo", [](const Unit& u, int bay, sol::this_state ts) {
+        sol::state_view L(ts);
+        const Tethys::CargoKit k = u.GetFactoryCargo(bay - 1);
+        const std::string extra = (k.cargoOrWeaponType == MapID::None) ? std::string() : NameFromMapId(k.cargoOrWeaponType);
+        return std::make_tuple(NameFromMapId(k.unitType), extra.empty() ? sol::make_object(L, sol::lua_nil)
+                                                                        : sol::make_object(L, extra)); },
       "surveyed_by",   &Unit_SurveyedBy,
 
       // ---- what was ordered, read back (nil when the unit isn't doing it) ----
@@ -2222,6 +2229,7 @@ void RegisterBindings(sol::state& lua) {
 
   RegisterGroupBindings(lua);
   Hackaray::Register(lua);
+  Campaign::Register(lua);
 
   lua.new_usertype<Region>(
       "Region", sol::no_constructor,

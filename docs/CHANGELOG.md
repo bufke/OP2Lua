@@ -5,6 +5,19 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-11-19
+
+The full list is in CHANGES.md under [0.8.3].
+
+### Added
+
+- `campaign.save(name, tbl)` / `campaign.load(name)` / `campaign.delete(name)`: plain data a campaign mission saves
+  for the next one, in a `.carry` file beside the mission DLL (data only, never run as code).
+
+### Changed
+
+- `unit:factory_cargo(bay)` also returns the bay's weapon or cargo, and works on a Spaceport's bays.
+
 ## [0.8.2] - 2026-11-19
 
 The full list is in CHANGES.md under [0.8.2].

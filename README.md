@@ -22,7 +22,7 @@ no capstone, no op2ext module**.
 
 ## Status
 
-**Working in-game (v0.8.2).** A demo pack runs in real Outpost 2 - **Hold the Line** (defense),
+**Working in-game (v0.8.3).** A demo pack runs in real Outpost 2 - **Hold the Line** (defense),
 **Strike Team** (offense), **The Convoy** (escort), **Hold the Beacon** (control), and **Seek and
 Destroy** (hunt): placement, escalating waves, scripted/reactive enemies, timed reinforcements, cargo
 trucks, synced RNG, combat orders, messages, Savant voices, the multiplayer "Morale Steady" rule, and
@@ -74,6 +74,7 @@ OP2Lua/
     LuaHost.cpp               - embeds Lua, runs scripts, scheduler preamble
     Bindings.cpp              - the author-facing API, bound to Tethys via sol2
     Hackaray.cpp              - the opt-in hackaray.* functions (Hackaray.dll's nuke patch and end videos)
+    Campaign.cpp              - campaign.* (data a campaign mission saves for the next, in a .carry file)
     Names.cpp                 - name <-> MapID / SoundID tables
     ErrorHandling.cpp         - crash reporter / native stack traces
     Log.cpp                   - dependency-free logger + reliable build stamp
