@@ -5,6 +5,19 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-19
+
+The full list is in CHANGES.md under [0.8.2].
+
+### Added
+
+- `OPU\logs\OP2Lua-<dll>-result.json`: how the mission ended (won, lost, aborted, victory, defeat, terminated), for
+  launchers; `on_end(result)` gets the same when the game reports the end while the mission runs.
+
+### OP2LuaEditor 0.8.2 (build 0027)
+
+- The version only.
+
 ## [0.8.1] - 2026-11-18
 
 The full list is in CHANGES.md under [0.8.1].

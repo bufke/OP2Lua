@@ -8,6 +8,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <exception>
 #include <string>
@@ -28,6 +29,8 @@
 #include "Hackaray.h"
 
 #include "Tethys/API/Mission.h"
+#include "Tethys/Game/GameStartInfo.h"   // MissionResults (OnEndMission)
+#include "Tethys/Game/GameImpl.h"        // the game's end reason
 #include "Tethys/API/Unit.h"
 
 namespace fs = std::filesystem;
@@ -45,6 +48,7 @@ struct MissionState {
 };
 MissionState g;
 std::string gDir;   // the running mission's folder (Dir())
+std::string gBase;  // the running mission DLL's name without .dll (its log and result file names)
 
 void LogCbError(const char* cb, const std::string& what) {
   // A script error is a mission event - send it to the mission log, not the framework Main log.
@@ -168,6 +172,85 @@ std::string AIStatusPath(const std::string& base) {
   const std::string clean = CleanBase(base);
   return clean.empty() ? std::string() : ("logs/OP2Lua-" + clean + "-AI-status.json");
 }
+std::string ResultPath(const std::string& base) {
+  const std::string clean = CleanBase(base);
+  return clean.empty() ? std::string() : ("logs/OP2Lua-" + clean + "-result.json");
+}
+
+// The game's GameTermReasons as a word: single player won/lost/aborted, multiplayer victory/defeat/terminated.
+const char* ResultName(int reason) {
+  switch (reason) {
+    case 3: return "won";
+    case 4: return "lost";
+    case 6: return "aborted";
+    case 7: return "victory";
+    case 8: return "defeat";
+    case 9: return "terminated";
+    default: return "other";
+  }
+}
+
+// The mission's end, recorded once, from whichever comes first: the game's own end reason as a tick sees it, the
+// MissionResults OPU passes OnEndMission, or the end reason when the game unloads the mission. Written to
+// OPU\logs\OP2Lua-<dll>-result.json (overwritten each end, so a launcher can read how the mission ended) and given to
+// on_end as a table.
+struct EndResult { int reason = 0, tick = 0, localPlayer = 0; };
+bool gEnded = false;
+
+void FinishMission(const EndResult& e, const char* source, bool callLua = true) {
+  if (gEnded) return;
+  gEnded = true;
+  const char* result = ResultName(e.reason);
+  const std::string path = ResultPath(gBase);
+  if (!path.empty()) {
+    char when[32] = "";
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    if (localtime_s(&local, &now) == 0) std::strftime(when, sizeof(when), "%Y-%m-%dT%H:%M:%S", &local);
+    if (FILE* f = std::fopen(path.c_str(), "w")) {
+      std::fprintf(f,
+                   "{\n  \"mission\": \"%s.dll\",\n  \"result\": \"%s\",\n  \"reason\": %d,\n  \"tick\": %d,\n"
+                   "  \"mark\": %d,\n  \"local_player\": %d,\n  \"time\": \"%s\"\n}\n",
+                   CleanBase(gBase).c_str(), result, e.reason, e.tick, e.tick / 100, e.localPlayer, when);
+      std::fclose(f);
+    } else {
+      LOG(WARNING) << "could not write " << path;
+    }
+  }
+  LOG_MISSION(INFO) << "mission ended: " << result << " (reason " << e.reason << ", tick " << e.tick << ", seen by "
+                    << source << ")";
+  if (!callLua || !g.active || !g.onEnd.valid()) return;
+  sol::table t = LuaHost::Get().lua().create_table();
+  t["result"] = result;
+  t["reason"] = e.reason;
+  t["tick"] = e.tick;
+  t["mark"] = e.tick / 100;
+  t["local_player"] = e.localPlayer;
+  DispatchVoid(g.onEnd, "on_end", t);
+}
+
+// The game's end reason now (GameImpl::gameTermReasons_); 0 while the game runs.
+EndResult GameEnd() {
+  EndResult e;
+  if (auto* impl = Tethys::GameImpl::GetInstance()) {
+    e.reason = static_cast<int>(impl->gameTermReasons_);
+    e.tick = impl->tick_;
+    e.localPlayer = impl->localPlayer_;
+  }
+  return e;
+}
+
+// When the game exits without telling the mission it ended (a game started by op2launcher closes from the end
+// screen: no OnEndMission, no OnUnloadMission), the core's shutdown records the end. No Lua that late.
+void FinishAtExit() {
+  if (!gEnded && !gBase.empty()) FinishMission(GameEnd(), "the game's exit", false);
+}
+
+// Logs a mission event the game sent, with the end reason the game had then.
+void NoteEndEvent(const char* name) {
+  const EndResult e = GameEnd();
+  LOG_MISSION(INFO) << name << " (end reason " << e.reason << ", tick " << e.tick << ")";
+}
 
 // The .map name baked into the stub DLL's MapName export (the ground truth - what OP2 actually loads).
 std::string BakedMapName(const std::string& base) {
@@ -207,6 +290,10 @@ std::string StripColonyPrefix(const std::string& base) {
 void LoadMissionDir(const std::string& dir, const std::string& base) {
   EnsureCoreInit();                      // one-time: main log + crash reporter + mark stamp + pin
   gDir = dir;
+  gBase = base;
+  gEnded = false;
+  static const bool atExitSet = (std::atexit(FinishAtExit), true);   // after the crash reporter's: runs before it
+  (void)atExitSet;
 
   // Point the per-mission Mission + AI logs at this mission, with a self-identifying header on each
   // (name + baked map + core version) so neither file needs the framework lines duplicated into it.
@@ -339,6 +426,10 @@ OP2LUACORE_API void OP2LuaCore_AIProc(void) {
   OP2Lua::FlushUnitOrders();          // issue orders queued last tick (units now safe to command)
   DispatchVoid(g.pump, "scheduler");  // fire due after()/every()/when() (may queue new orders)
   DispatchVoid(g.onTick, "on_tick");
+  if (!gEnded) {
+    const EndResult e = GameEnd();
+    if (e.reason != 0) FinishMission(e, "the game's end reason");
+  }
 }
 
 OP2LUACORE_API void OP2LuaCore_GetSaveRegions(void* pSaveRegion) {
@@ -347,11 +438,23 @@ OP2LUACORE_API void OP2LuaCore_GetSaveRegions(void* pSaveRegion) {
 }
 
 OP2LUACORE_API int  OP2LuaCore_OnLoadMission(void*)     { return DispatchBool(g.onLoad, "on_load", true) ? 1 : 0; }
-OP2LUACORE_API void OP2LuaCore_OnEndMission(void*)      { DispatchVoid(g.onEnd, "on_end"); }
+OP2LUACORE_API void OP2LuaCore_OnEndMission(void* pArgs) {
+  NoteEndEvent("OnEndMission");
+  EndResult e = GameEnd();
+  const auto* a = static_cast<const OnEndMissionArgs*>(pArgs);
+  if (a != nullptr && a->structSize >= sizeof(OnEndMissionArgs) && a->pMissionResults != nullptr) {
+    e.reason = static_cast<int>(a->pMissionResults->gameTermReason);
+    e.tick = a->pMissionResults->tick;
+    e.localPlayer = a->pMissionResults->localPlayerID;
+  }
+  FinishMission(e, "OnEndMission");
+}
 OP2LUACORE_API int  OP2LuaCore_OnSaveGame(void*)        { return DispatchBool(g.onSave, "on_save", true) ? 1 : 0; }
 OP2LUACORE_API int  OP2LuaCore_OnLoadSavedGame(void*)   { return DispatchBool(g.onLoadSave, "on_load_save", true) ? 1 : 0; }
 
 OP2LUACORE_API int OP2LuaCore_OnUnloadMission(void*) {
+  NoteEndEvent("OnUnloadMission");
+  if (!gEnded && !gBase.empty()) FinishMission(GameEnd(), "OnUnloadMission");
   const int r = DispatchBool(g.onUnload, "on_unload", true) ? 1 : 0;
   Reset();  // tear the mission down when the game unloads it
   return r;
