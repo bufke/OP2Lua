@@ -207,8 +207,9 @@ appear in the editor, the `.opm`, the `.lua`, and the in-game status bar.
    └──────────────────────────┘             └──────────────────────────────────┘
 ```
 
-- **C# side** (editor + converter): where most authoring value lives, and where the team is
-  already strong. Owns placement, the `.opm` → `placement.lua` transpile, and the `DescBlock`
-  byte-patch of the stub.
+- **Authoring tools**: where most authoring value lives. OP2LuaEditor (VB.NET, and its Rust
+  rewrite in `op2lua-editor-rust/` for Windows, Linux and macOS) edits `placement.lua` over the
+  map and patches the stub's name, map and `DescBlock`; `op2lua-newmission` scaffolds missions; the
+  converters (`.opm`, a stock mission DLL with `op2dll lua`) write `placement.lua` from what exists.
 - **C++ side** (this repo): two DLLs - a tiny forwarding stub and a thin, deterministic Lua host.
 - **Missions**: data + logic, both Lua, no per-mission compile.

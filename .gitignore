@@ -11,4 +11,5 @@ _work/
 build/
 op2lua-editor/OP2LuaEditor/bin/
 op2lua-editor/OP2LuaEditor/obj/
+op2lua-editor-rust/target/
 .vs/

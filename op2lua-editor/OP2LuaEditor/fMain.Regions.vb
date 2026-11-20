@@ -479,6 +479,7 @@ Partial Public Class fMain
 
         ' beacons, walls/tubes and markers, then the units over them
         If showUnits Then DrawDozedBorders(g, Function(tx, ty) TilesToScreenRect(tx, ty, tx, ty))
+        If showUnits Then DrawDroppedTubes(g, Function(tx, ty) TilesToScreenRect(tx, ty, tx, ty))
         If showMapObjects Then DrawMapObjects(g, Function(tx, ty) TilesToScreenRect(tx, ty, tx, ty), Me.Font)
         DrawUnits(g)
 
@@ -1702,7 +1703,7 @@ Partial Public Class fMain
             If o.Kind <> MapObjectKind.Wall Then Continue For
             Dim col As Color
             Select Case o.ObjType
-                Case "Tube" : col = Color.FromArgb(170, 205, 170, 110)
+                Case "Tube" : col = tubeColor
                 Case "LavaWall" : col = Color.FromArgb(190, 230, 90, 30)
                 Case "MicrobeWall" : col = Color.FromArgb(190, 110, 160, 50)
                 Case Else : col = Color.FromArgb(190, 120, 120, 120)
@@ -1811,8 +1812,8 @@ Partial Public Class fMain
 
     ' Building footprints in tiles (X-size x Y-size), keyed by the .opm type name used in placement.lua.
     ' Source: the X-size / Y-size columns of OPU\base\sheets\building.txt. Vehicles and anything not listed here are
-    ' 1x1. A structure's location is the tile where its tube lines cross: its centre, or right of / below it for an
-    ' even size (a Tokamak's is its lower-right tile).
+    ' 1x1. A structure's location is where its vertical and horizontal tubes would cross: its centre, or right of /
+    ' below it for an even size (a Tokamak's is its lower-right tile).
     Private Shared ReadOnly buildingFootprints As New Dictionary(Of String, Size)(StringComparer.OrdinalIgnoreCase) From {
         {"CommandCenter", New Size(3, 2)}, {"RobotCommand", New Size(2, 2)}, {"TradeCenter", New Size(2, 2)},
         {"Tokamak", New Size(2, 2)}, {"MHDGenerator", New Size(2, 2)}, {"SolarPowerArray", New Size(3, 2)},
@@ -1829,19 +1830,49 @@ Partial Public Class fMain
         {"MeteorDefense", New Size(2, 2)}, {"GuardPost", New Size(1, 1)}, {"LightTower", New Size(1, 1)},
         {"Tube", New Size(1, 1)}, {"Wall", New Size(1, 1)}, {"LavaWall", New Size(1, 1)}, {"MicrobeWall", New Size(1, 1)}}
 
-    ' Structures the game makes without a dozed border (building.txt's Border column is N): power plants, mines,
-    ' light towers, tubes and walls. Every other structure gets a one-tile ring of bulldozed ground around it.
-    Private Shared ReadOnly noBorderTypes As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
-        "Tokamak", "MHDGenerator", "GeothermalPlant", "SolarPowerArray", "LightTower",
-        "MagmaWell", "CommonOreMine", "RareOreMine", "Tube", "Wall", "LavaWall", "MicrobeWall"}
+    ' Tiles a player lays rather than buildings: no dozed ring, no tube connections of their own.
+    Private Shared ReadOnly laidTypes As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
+        "Tube", "Wall", "LavaWall", "MicrobeWall"}
 
-    ' Whether the game clears a dozed border around this type: a structure not in noBorderTypes.
+    ' Structures without tube connections (building.txt's Border column is N): power plants, mines, the magma well
+    ' and light towers.
+    Private Shared ReadOnly noTubeTypes As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
+        "Tokamak", "MHDGenerator", "GeothermalPlant", "SolarPowerArray", "LightTower",
+        "MagmaWell", "CommonOreMine", "RareOreMine"}
+
+    ' Whether the game clears a dozed border around this type: every structure (power plants and mines too), not
+    ' tubes and walls.
     Private Function HasDozedBorder(unitType As String) As Boolean
         Return Not String.IsNullOrEmpty(unitType) AndAlso buildingFootprints.ContainsKey(unitType) AndAlso
-               Not noBorderTypes.Contains(unitType)
+               Not laidTypes.Contains(unitType)
     End Function
 
-    ' The bulldozed ring the game clears around a structure, one tile out from each bordered structure's footprint,
+    ' Whether the structure connects to its colony by tubes (building.txt's Border column).
+    Private Function HasTubes(unitType As String) As Boolean
+        Return HasDozedBorder(unitType) AndAlso Not noTubeTypes.Contains(unitType)
+    End Function
+
+    ' The tube colour of the map overlay: the walls table's tubes and the ones structures lay alike.
+    Private Shared ReadOnly tubeColor As Color = Color.FromArgb(170, 205, 170, 110)
+
+    ' The two tubes the game lays when a structure with tube connections is placed: one tile east of its footprint on
+    ' its location's row, one tile south of it on its location's column. Measured in the harness (every OPU 1.4.1
+    ' structure placed by CreateUnit, the cells around it read back: op2lua/_work/sweep-tools/tubetest).
+    ' tileRect gives a 0-based tile's rectangle on g.
+    Private Sub DrawDroppedTubes(g As Graphics, tileRect As Func(Of Integer, Integer, System.Drawing.Rectangle))
+        If unitList Is Nothing Then Return
+        Using fill As New SolidBrush(tubeColor)
+            For Each u As MissionUnit In unitList
+                If Not u.HasAt OrElse Not HasTubes(u.UnitType) Then Continue For
+                Dim t0x, t0y, t1x, t1y As Integer
+                UnitFootprintTiles(u, t0x, t0y, t1x, t1y)
+                g.FillRectangle(fill, tileRect(t1x + 1, LuaToTile(u.Y)))
+                g.FillRectangle(fill, tileRect(LuaToTile(u.X), t1y + 1))
+            Next
+        End Using
+    End Sub
+
+    ' The bulldozed ring the game clears around a structure, one tile out from each structure's footprint,
     ' drawn under everything. A tile is dozed or not: tiles in two rings are collected once and filled once, so
     ' overlapping rings don't draw darker. tileRect gives a 0-based tile's rectangle on g.
     Private Sub DrawDozedBorders(g As Graphics, tileRect As Func(Of Integer, Integer, System.Drawing.Rectangle))
@@ -2158,6 +2189,7 @@ Partial Public Class fMain
             Next
             ' beacons, walls and markers, then units
             If showUnits Then DrawDozedBorders(g, Function(tx, ty) New System.Drawing.Rectangle(tx * 32, ty * 32, 32, 32))
+            If showUnits Then DrawDroppedTubes(g, Function(tx, ty) New System.Drawing.Rectangle(tx * 32, ty * 32, 32, 32))
             If showMapObjects Then DrawMapObjects(g, Function(tx, ty) New System.Drawing.Rectangle(tx * 32, ty * 32, 32, 32), unitFont)
             If showUnits AndAlso unitList IsNot Nothing Then
                 For Each u As MissionUnit In unitList

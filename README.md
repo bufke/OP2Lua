@@ -84,6 +84,7 @@ OP2Lua/
   op2lua-newmission/          - cross-platform C++ console tool that scaffolds a new mission
                                 (clone+patch the stub + skeleton scripts); compiled exe ships in the SDK
   op2lua-editor/              - OP2LuaEditor (VB.NET, Windows): edit a mission's layout over its map
+  op2lua-editor-rust/         - OP2LuaEditor rewritten in Rust (egui) for Windows, Linux and macOS; GPL-3.0
   cmake/                      - the clang-cl 32-bit toolchain file
   docs/                       - API.md, FILE-FORMAT.md, ARCHITECTURE.md, LOGGING.md, CHANGELOG.md
   third_party/                - Tethys (vendored), Lua 5.4.7, sol2 3.5.0  (see third_party/README.md)
@@ -153,6 +154,9 @@ shared log and the full dump in the mission's. See [`docs/LOGGING.md`](docs/LOGG
 ## License
 
 OP2Lua is released under the [MIT License](LICENSE) - Copyright © 2026 Outpost Universe.
+
+The Rust editor in `op2lua-editor-rust/` is GPL-3.0-or-later (its own `LICENSE`), because the op2-formats
+library it reads the game's files with is GPL-3.0.
 
 Vendored libraries under `third_party/` keep their own licenses: **Tethys** (BSD 3-Clause,
 `third_party/Tethys/LICENSE`), **Lua 5.4.7** (MIT, notice at the end of `third_party/lua/lua.h`)

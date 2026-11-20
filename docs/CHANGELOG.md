@@ -5,6 +5,14 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+### Added
+
+- OP2LuaEditor rewritten in Rust (`op2lua-editor-rust/`, GPL-3.0-or-later) for Windows, Linux and macOS: everything
+  the VB.NET editor does, drawing the map from GPU textures, with a Select tool, side-panel editing and a save prompt.
+  It reads and rewrites `placement.lua` with op2-formats' `placement` module (0.5).
+- Both editors draw the two tube tiles the game lays beside each structure with tube connections (east of it and south
+  of it), and the dozed ring around every structure, power plants and mines included.
+
 ## [0.8.3] - 2026-11-19
 
 The full list is in CHANGES.md under [0.8.3].

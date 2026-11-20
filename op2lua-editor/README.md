@@ -1,5 +1,8 @@
 # OP2LuaEditor
 
+> A Rust rewrite that runs on Windows, Linux and macOS and does everything this editor does is in
+> [`../op2lua-editor-rust`](../op2lua-editor-rust). This VB.NET editor is what the SDK ships until that one replaces it.
+
 A visual editor for building **OP2Lua** mission layouts for *Outpost 2: Divided Destiny*.
 
 ## What is it?
@@ -18,7 +21,9 @@ write the `<Name>.lua` (the logic), and `OP2LuaCore.dll` runs them in-game.
 - **Open / load a map** as the editing backdrop (reads OP2 1.4.1 tile graphics from the well BMPs).
 - **Place units** for each player (1-6) and **draw regions**, round-tripped to/from `placement.lua`. Saving
   rewrites only what you changed: every other field, comment and line of the file stays as it was.
-- **Beacons, walls, tubes and markers** from `placement.lua` are drawn on the map for context.
+- **Beacons, walls, tubes and markers** from `placement.lua` are drawn on the map for context, with the ring of dozed
+  ground around every structure and the two tubes the game lays beside each structure with tube connections (east of
+  it on its location's row, south of it on its location's column).
 - **Mission properties** - name, map, tech, mission type (Colony, Tutorial, AutoDemo or a multiplayer type),
   players, max tech level; the mission DLL is patched to match.
 - **New Mission** scaffolding - clones the stub DLL and patches its name, map, type and player count, writes
