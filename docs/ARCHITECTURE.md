@@ -128,6 +128,14 @@ Because the `lua_State` is rebuilt per mission, every mission starts from a clea
 environment - no leakage between missions, and a script error is caught and logged, never crashing
 the game.
 
+A fault inside a game call is caught the same way (`Guard.h`). The core is built with `/EHa`, and while it runs
+mission code (a callback, the scheduler, placement, the queued orders, the script's first run) it holds a
+`Guard::Scope`, under which a hardware fault becomes a C++ exception. sol2 turns an exception in a binding into a Lua
+error, so the fault takes the script-error path: logged with the callback and the script's line, that callback
+stopped, the game carrying on. The crash reporter stays quiet for those (a dump is only for what nothing catches). A
+guard can't undo a game function stopped halfway, so the bindings check their arguments before the call; and it
+can't help with a state the game faults on later in its own tick, which needs the setup refused up front.
+
 ### Diagnostics: three log sinks
 
 Every log line goes to exactly one of three files (`Log.h`: Main, Mission, AI):

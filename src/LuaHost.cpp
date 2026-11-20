@@ -12,6 +12,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include "Guard.h"
 #include "Log.h"
 #include "Mission.h"
 
@@ -21,6 +22,19 @@ LuaHost& LuaHost::Get() {
   static LuaHost* instance = new LuaHost();
   return *instance;
 }
+
+namespace {
+
+// sol2 calls this when a binding throws (a GameFault from Guard.h, or any other C++ exception): the message, after
+// the file and line of the Lua code that made the call, becomes the Lua error.
+int BindingError(lua_State* L, sol::optional<const std::exception&>, sol::string_view what) {
+  luaL_where(L, 1);
+  lua_pushlstring(L, what.data(), what.size());
+  lua_concat(L, 2);
+  return 1;
+}
+
+}  // namespace
 
 void LuaHost::Init() {
   // Recreate a fresh state on each call so every mission gets a clean global environment
@@ -41,6 +55,7 @@ void LuaHost::Init() {
   lua_["dofile"] = sol::lua_nil;
   lua_["loadfile"] = sol::lua_nil;
   lua_["load"] = sol::lua_nil;
+  lua_.set_exception_handler(&BindingError);
 
   RegisterBindings(lua_);
 
@@ -163,6 +178,7 @@ void LuaHost::Shutdown() {
 }
 
 bool LuaHost::RunFile(const std::string& path) {
+  Guard::Scope guard;   // the script's top level may call the game too
   sol::protected_function_result result = lua_.safe_script_file(
       path, &sol::script_pass_on_error);
 

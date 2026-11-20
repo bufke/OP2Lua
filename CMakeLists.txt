@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(OP2Lua VERSION 0.8.3 LANGUAGES CXX C)
+project(OP2Lua VERSION 0.8.4 LANGUAGES CXX C)
 # NOTE: keep this VERSION in sync with OP2LUA_VERSION in src/OP2LuaCore.h.
 
 # ---------------------------------------------------------------------------
@@ -64,6 +64,7 @@ add_library(OP2LuaCore SHARED
   src/Campaign.cpp
   src/Names.cpp
   src/ErrorHandling.cpp
+  src/Guard.cpp
   src/Log.cpp
   ${LUA_SOURCES}
   ${OP2LUACORE_RC}                 # Windows version/copyright resource (MSVC only)
@@ -80,7 +81,14 @@ target_compile_definitions(OP2LuaCore PRIVATE
   _CRT_SECURE_NO_WARNINGS
   MAKE_LIB                        # build Lua as a library
 )
+option(OP2LUA_GUARD_TEST "Test builds: add __op2lua_fault(), a game call that faults (src/Guard.h)" OFF)
+if(OP2LUA_GUARD_TEST)
+  target_compile_definitions(OP2LuaCore PRIVATE OP2LUA_GUARD_TEST)
+endif()
 if(MSVC)
+  # /EHa: a hardware fault inside a game call reaches C++ catch blocks and unwinds the frames in between, so a
+  # binding's fault becomes a Lua error (src/Guard.h).
+  string(REPLACE "/EHsc" "/EHa" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
   target_compile_options(OP2LuaCore PRIVATE /bigobj)  # sol2's templates: Bindings.cpp passes the default section limit
 endif()
 target_link_libraries(OP2LuaCore PRIVATE dbghelp winmm)  # crash reporter; PlaySound (game.play_wav)

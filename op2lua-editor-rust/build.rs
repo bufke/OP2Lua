@@ -1,7 +1,7 @@
 //! Gives the Windows executable its icon, and tells the About box which versions of its main libraries it was
 //! built with (read from Cargo.lock).
 
-const LIBRARIES: &[&str] = &["eframe", "op2-formats", "rodio", "rfd", "image", "regex", "ab_glyph"];
+const LIBRARIES: &[&str] = &["eframe", "op2-formats", "rodio", "rfd", "image", "ab_glyph"];
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.lock");
@@ -29,6 +29,8 @@ fn main() {
         res.set_icon("assets/app.ico");
         res.set("FileDescription", "OP2LuaEditor");
         res.set("ProductName", "OP2LuaEditor");
+        res.set("CompanyName", "Outpost Universe");
+        res.set("LegalCopyright", "Copyright \u{a9} Outpost Universe");
         if let Err(e) = res.compile() {
             // No resource compiler: the editor still builds, without its icon.
             println!("cargo:warning=no icon in the executable: {e}");

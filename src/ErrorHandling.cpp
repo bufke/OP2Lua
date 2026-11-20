@@ -21,6 +21,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <dbghelp.h>
+#include "Guard.h"
 #include "Log.h"
 
 #include "Tethys/Common/Types.h"
@@ -192,10 +193,13 @@ static LONG WINAPI ExceptionHandler(EXCEPTION_POINTERS* exc) {
     //   0x406D1388 = SetThreadName signal used by debuggers
     //   0xE0434352 / 0xE0434F4D = .NET/CLR exceptions
     // (Lua itself uses longjmp, not C++ exceptions, but our own C++ code may still throw.)
+    // A fault inside guarded mission code (Guard.h) is caught and logged as a Lua error, so it gets no dump,
+    // except a stack overflow, which a catch can't recover from.
     const bool isRealFault =
         (code & 0x80000000) &&
         code != 0xE06D7363 && code != 0x406D1388 &&
-        code != 0xE0434352 && code != 0xE0434F4D;
+        code != 0xE0434352 && code != 0xE0434F4D &&
+        (!Guard::Active() || code == EXCEPTION_STACK_OVERFLOW);
     if (isRealFault) {
       {
         // Update the exception info in memory and queue an APC to handle it in the other thread.

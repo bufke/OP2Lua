@@ -26,6 +26,7 @@
 #include "Mission.h"
 #include "Placement.h"
 #include "ErrorHandling.h"
+#include "Guard.h"
 #include "Hackaray.h"
 
 #include "Tethys/API/Mission.h"
@@ -73,6 +74,7 @@ sol::protected_function Resolve(sol::state& L, const char* name) {
 template <typename... Args>
 void DispatchVoid(sol::protected_function& fn, const char* name, Args&&... args) {
   if (!g.active || !fn.valid()) return;
+  Guard::Scope guard;   // a fault in a game call ends this callback as a Lua error
   try {
     sol::protected_function_result r = fn(std::forward<Args>(args)...);
     if (!r.valid()) { sol::error e = r; LogCbError(name, e.what()); }
@@ -83,6 +85,7 @@ void DispatchVoid(sol::protected_function& fn, const char* name, Args&&... args)
 template <typename... Args>
 bool DispatchBool(sol::protected_function& fn, const char* name, bool dflt, Args&&... args) {
   if (!g.active || !fn.valid()) return dflt;
+  Guard::Scope guard;
   try {
     sol::protected_function_result r = fn(std::forward<Args>(args)...);
     if (!r.valid()) { sol::error e = r; LogCbError(name, e.what()); return dflt; }
@@ -418,12 +421,26 @@ OP2LUACORE_API void OP2LuaCore_LoadMission(const char* missionDir, const char* b
 }
 
 OP2LUACORE_API int OP2LuaCore_InitProc(void) {
-  OP2Lua::Placement::Apply();  // build the level before on_init runs
+  {
+    OP2Lua::Guard::Scope guard;
+    try {
+      OP2Lua::Placement::Apply();  // build the level before on_init runs
+    } catch (const std::exception& e) {
+      LOG_MISSION(ERROR) << "placement: " << e.what() << " - the rest of the layout wasn't placed";
+    }
+  }
   return DispatchBool(g.onInit, "on_init", true) ? 1 : 0;
 }
 
 OP2LUACORE_API void OP2LuaCore_AIProc(void) {
-  OP2Lua::FlushUnitOrders();          // issue orders queued last tick (units now safe to command)
+  {
+    OP2Lua::Guard::Scope guard;
+    try {
+      OP2Lua::FlushUnitOrders();      // issue orders queued last tick (units now safe to command)
+    } catch (const std::exception& e) {
+      LOG_MISSION(ERROR) << "queued unit orders: " << e.what();
+    }
+  }
   DispatchVoid(g.pump, "scheduler");  // fire due after()/every()/when() (may queue new orders)
   DispatchVoid(g.onTick, "on_tick");
   if (!gEnded) {

@@ -165,6 +165,31 @@ int PlayerNumFrom(const sol::object& o) {
   return -1;
 }
 
+bool ValidPlayerNum(int num);
+
+// PlayerNumFrom for a call that indexes the game's player table with it: -1, and a warning naming `fn`, unless it
+// is a player (1-7, or a Player).
+int PlayerArg(const sol::object& o, const char* fn) {
+  const int num = PlayerNumFrom(o);
+  if (ValidPlayerNum(num)) return num;
+  LOG_MISSION(WARNING) << fn << ": needs a player (1-7 or a Player)";
+  return -1;
+}
+
+// Whether a tile (the game's coordinates, as LocFrom gives them) is on the game's grid: x within the padded width
+// (0x54F808), y within the height (0x54F810). The map's tile array is indexed with it unchecked.
+bool OnGrid(const Location& l) {
+  return l.x >= 0 && l.x < *reinterpret_cast<const int*>(0x54F808) &&
+         l.y >= 0 && l.y < *reinterpret_cast<const int*>(0x54F810);
+}
+
+// OnGrid for a call that writes the tile: false, and a warning naming `fn`, when it is off the map.
+bool OnGridArg(const Location& l, const char* fn) {
+  if (OnGrid(l)) return true;
+  LOG_MISSION(WARNING) << fn << ": the tile is off the map";
+  return false;
+}
+
 // The sound manager's "sound is on" flag (+0x920: AddMapSound, 0x47EDB0, plays nothing while it is 0) and its
 // volume step (+0x914, OPU\outpost2.ini's SoundVol: a sound is played at -50 * step hundredths of a dB, 0x47E32D).
 int& GameSoundOn()  { return *reinterpret_cast<int*>(reinterpret_cast<char*>(Tethys::SoundManager::GetInstance()) + 0x920); }
@@ -268,7 +293,7 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
-// game.version() -> "0.8.3", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+// game.version() -> "0.8.4", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
 std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
 
 // game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
@@ -296,14 +321,17 @@ void Game_MoraleSteady(sol::object level, sol::object player) {
   const auto lvl = level.is<std::string>() ? MoraleFromName(level.as<std::string>())
                                            : Tethys::MoraleLevel::Good;
   const bool all = !player.valid() || player == sol::lua_nil;
-  Game::ForceMoraleLevel(lvl, all ? static_cast<int>(Tethys::AllPlayers) : PlayerNumFrom(player));
+  const int num = all ? static_cast<int>(Tethys::AllPlayers) : PlayerArg(player, "morale_steady");
+  if (num < 0) return;
+  Game::ForceMoraleLevel(lvl, num);
   LOG_MISSION(INFO) << "game.morale_steady";
 }
 // game.free_morale([player]) - release the lock (all players, or one: a Player or a 1-based number); morale
 // fluctuates normally again.
 void Game_FreeMorale(sol::object player) {
   const bool all = !player.valid() || player == sol::lua_nil;
-  Game::FreeMoraleLevel(all ? static_cast<int>(Tethys::AllPlayers) : PlayerNumFrom(player));
+  const int num = all ? static_cast<int>(Tethys::AllPlayers) : PlayerArg(player, "free_morale");
+  if (num >= 0) Game::FreeMoraleLevel(num);
 }
 
 // game.create_unit{ type=, player=, at=, count=, weapon=, direction=, lights= } -> { Unit, ... }
@@ -323,6 +351,10 @@ sol::table Game_CreateUnit(sol::table opts, sol::this_state ts) {
     sol::object pObj = opts["player"];
     if (pObj.is<LuaPlayer>())   owner = pObj.as<LuaPlayer>().num;
     else if (pObj.is<int>())    owner = pObj.as<int>() - 1;
+  }
+  if (!ValidPlayerNum(owner)) {
+    LOG_MISSION(WARNING) << "create_unit: player " << (owner + 1) << " isn't a player (1-7)";
+    return out;
   }
   const sol::object atObj = opts["at"];
   const Location at = LocFrom(atObj);
@@ -745,8 +777,10 @@ sol::table Game_FindEmpMissileTarget(sol::object rect, sol::object player, sol::
   sol::state_view L(ts);
   const MapRect r = RectFrom(rect);
   Location out;
+  const int num = PlayerArg(player, "find_emp_missile_target");
+  if (num < 0) return L.create_table();
   using FindFn = Location*(__fastcall*)(Location*, int, int, int, int, int);
-  reinterpret_cast<FindFn>(0x478480)(&out, r.x1, r.y1, r.x2, r.y2, PlayerNumFrom(player));
+  reinterpret_cast<FindFn>(0x478480)(&out, r.x1, r.y1, r.x2, r.y2, num);
   sol::table t = L.create_table();
   t["x"] = out.x;
   t["y"] = out.y;
@@ -1220,9 +1254,7 @@ void StopMissionWav() { StopWav(); }
 static void Order(DeferredOrder o) {
   // The game's Unit::DoMove (0x476240) ignores a move to a tile off its grid (x outside the padded width at 0x54F808,
   // y outside the height at 0x54F810), so the unit keeps the order it had; a mission's off-map move does the same here.
-  if (o.kind == OrderKind::Move &&
-      (o.x < 0 || o.x >= *reinterpret_cast<const int*>(0x54F808) || o.y < 0 ||
-       o.y >= *reinterpret_cast<const int*>(0x54F810))) return;
+  if (o.kind == OrderKind::Move && !OnGrid(Location(o.x, o.y))) return;
   const int id = o.unit.GetID();
   gOrders.erase(std::remove_if(gOrders.begin(), gOrders.end(), [id](const DeferredOrder& q) { return q.unit.GetID() == id; }),
                 gOrders.end());
@@ -1555,6 +1587,14 @@ int* UnitStatPtr(int num, const sol::object& typeArg, const std::string& field, 
 
 void RegisterBindings(sol::state& lua) {
   gAIToComms = false;   // each mission starts with AI events NOT shown in-game
+#ifdef OP2LUA_GUARD_TEST
+  // Test builds only (cmake -DOP2LUA_GUARD_TEST=ON): a game call that faults, Unit::isDiscovered (0x476120) on a unit
+  // id far past the unit table, for checking that the fault comes back as a Lua error (Guard.h).
+  lua.set_function("__op2lua_fault", [] {
+    Unit u(0x0FFFFFFF);
+    using Fn = int(__thiscall*)(Unit*);
+    return reinterpret_cast<Fn>(0x476120)(&u); });
+#endif
   sol::table game = lua.create_named_table("game");
   game.set_function("message", &Game_Message);
   // game.message_at(text, sound, player, pixel_x, pixel_y): a message for one player (or all, with nil), pointing at a
@@ -1590,8 +1630,13 @@ void RegisterBindings(sol::state& lua) {
   game.set_function("tech",        &Game_Tech);        // a research topic from the loaded tech tree
 
   // ---- runtime map features (set-pieces created during the mission, not just at placement) ----
-  game.set_function("create_wall", [](const std::string& type, sol::object area) {
-    Game::CreateWall(MapIdFromName(type), RectFrom(area)); });                 // type: "Wall"/"Tube"/"LavaWall"/...
+  game.set_function("create_wall", [](const std::string& type, sol::object area) {   // "Wall"/"Tube"/"LavaWall"/...
+    const MapID t = MapIdFromName(type);
+    if (t != MapID::Wall && t != MapID::Tube && t != MapID::LavaWall && t != MapID::MicrobeWall) {
+      LOG_MISSION(WARNING) << "create_wall: '" << type << "' isn't a wall type (Wall, Tube, LavaWall, MicrobeWall)";
+      return;
+    }
+    Game::CreateWall(t, RectFrom(area)); });
   game.set_function("create_tube", [](sol::object area) { Game::CreateTube(RectFrom(area)); });
   game.set_function("create_marker", [](sol::object at, sol::optional<std::string> type) {
     using Tethys::TethysAPI::MarkerType;
@@ -1654,8 +1699,10 @@ void RegisterBindings(sol::state& lua) {
   // Eden 12's FireEMP1).
   game.set_function("create_emp_missile", [](sol::object target, sol::object from, sol::object player) {
     const Location t = LocFrom(target), f = LocFrom(from);
+    const int num = PlayerArg(player, "create_emp_missile");
+    if (num < 0) return;
     using Fn = void(__fastcall*)(int, int, int, int, int);
-    reinterpret_cast<Fn>(0x478420)(f.x, f.y, PlayerNumFrom(player), t.x, t.y); });
+    reinterpret_cast<Fn>(0x478420)(f.x, f.y, num, t.x, t.y); });
   // game.wreckage() - the wreckage on the map (type 0x54, the gaia player's, 6), as a stock mission walks it
   // (Eden 6).
   // game.set_music(songs [, repeat_from]) - the music playlist: the game's song numbers in order, and the position
@@ -1700,12 +1747,17 @@ void RegisterBindings(sol::state& lua) {
   // A tile's graphic: its index in the map's tile mappings (as a map editor shows it). The stock
   // lava maps swap in volcano tiles before an eruption: game.set_tile({ 52, 4 }, 1147).
   game.set_function("tile",     [](sol::object at) { return GameMap::GetTile(LocFrom(at)); });
-  game.set_function("set_tile", [](sol::object at, int index) { GameMap::SetTile(LocFrom(at), index); });
+  game.set_function("set_tile", [](sol::object at, int index) {
+    const Location l = LocFrom(at);
+    if (OnGridArg(l, "set_tile")) GameMap::SetTile(l, index); });
   // A setup's own map edits (Tutorial 5's): a tile set as the map loads, and a tile's cell type (the game's
   // CellType number: what moves over it and what can be built on it).
-  game.set_function("initial_set_tile", [](sol::object at, int index) { GameMap::InitialSetTile(LocFrom(at), index); });
+  game.set_function("initial_set_tile", [](sol::object at, int index) {
+    const Location l = LocFrom(at);
+    if (OnGridArg(l, "initial_set_tile")) GameMap::InitialSetTile(l, index); });
   game.set_function("set_cell_type", [](sol::object at, int type) {
-    GameMap::SetCellType(LocFrom(at), static_cast<Tethys::CellType>(type)); });
+    const Location l = LocFrom(at);
+    if (OnGridArg(l, "set_cell_type")) GameMap::SetCellType(l, static_cast<Tethys::CellType>(type)); });
   game.set_function("map_sound", [](sol::object sound, sol::object at) {
     Game::AddMapSound(ResolveSound(sound, static_cast<Tethys::SoundID>(0)), LocFrom(at)); });
 
@@ -1893,7 +1945,19 @@ void RegisterBindings(sol::state& lua) {
                         if (u.IsLive()) u.SetFactoryCargo(bay - 1, t, extra ? WeaponFor(t, MapIdFromName(*extra)) : MapID::None); },
       // factory:transfer_cargo(bay) - move the 1-based bay's cargo to the docked vehicle. ONLY call when
       // a vehicle is actually on the dock (see unit_on_dock) - calling it otherwise crashes OP2.
-      "transfer_cargo", [](Unit& u, int bay) { if (u.IsLive()) GuardedTransferCargo(u, bay - 1); },
+      "transfer_cargo", [](Unit& u, int bay) {
+                        if (!u.IsLive()) return;
+                        if (!u.IsFactory() || bay < 1 || bay > 6) {
+                          LOG_MISSION(WARNING) << "transfer_cargo: needs a factory and a bay 1-6";
+                          return;
+                        }
+                        if (u.GetFactoryCargo(bay - 1).unitType == MapID::None || !u.GetUnitOnDock().IsLive()) {
+                          LOG_MISSION(WARNING) << "transfer_cargo: bay " << bay
+                                               << " is empty or no vehicle is on the dock";
+                          return;
+                        }
+                        if (!GuardedTransferCargo(u, bay - 1))
+                          LOG_MISSION(WARNING) << "transfer_cargo: the game faulted moving bay " << bay << "; skipped"; },
       // lab:research(techId [, scientists]) - begin researching a technology. Validates the id first
       // (a bad id crashes DoResearch); on a bad id it logs an error + in-game message and no-ops.
       "research",     [](Unit& u, int techId, sol::optional<int> sci) {

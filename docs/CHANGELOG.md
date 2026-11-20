@@ -5,13 +5,26 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-20
+
+The full list is in CHANGES.md under [0.8.4].
+
 ### Added
 
 - OP2LuaEditor rewritten in Rust (`op2lua-editor-rust/`, GPL-3.0-or-later) for Windows, Linux and macOS: everything
   the VB.NET editor does, drawing the map from GPU textures, with a Select tool, side-panel editing and a save prompt.
-  It reads and rewrites `placement.lua` with op2-formats' `placement` module (0.5).
+  It reads and rewrites `placement.lua` with op2-formats' `placement` module (0.5). Version 0.8.4, by Outpost Universe.
 - Both editors draw the two tube tiles the game lays beside each structure with tube connections (east of it and south
   of it), and the dozed ring around every structure, power plants and mines included.
+
+### Changed
+
+- A fault inside a game call a script makes no longer closes the game: it comes back as a Lua error with the script's
+  file and line, is logged, and the mission carries on. The crash reporter no longer logs a crash for faults that are
+  caught.
+- Functions check their arguments before calling the game and refuse a bad one with a warning: player numbers
+  (`create_unit`, morale, EMP missiles), tiles off the map (`set_tile`, `initial_set_tile`, `set_cell_type`), wall
+  types (`create_wall`), and `transfer_cargo`'s bay, factory and docked vehicle.
 
 ## [0.8.3] - 2026-11-19
 
