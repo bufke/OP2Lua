@@ -32,7 +32,9 @@ exercised by two full-API smoke tests (**Feature Test** + **Lua Smoke Test**) th
 the log and on-screen. Coordinates match the in-game status bar (type what you see); each mission gets
 its own debug log.
 
-**Download the SDK + sample pack:** https://github.com/leviathan400/OP2LuaSDK/releases
+**Download the runtime:** `OP2LuaCore.dll` 0.8.6 from https://github.com/leviathan400/OP2Lua/releases (replace
+`OPU\OP2LuaCore.dll` with it). **The SDK** (docs, samples, tools): https://github.com/leviathan400/OP2LuaSDK; its
+releases page has the v0.6.0 sample pack, which carries OP2LuaCore 0.6.0, so replace that with 0.8.6 after installing.
 
 See [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for what each release changed.
 

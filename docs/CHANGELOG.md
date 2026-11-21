@@ -7,8 +7,6 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [0.8.6] - 2026-11-21
 
-The full list is in CHANGES.md under [0.8.6].
-
 ### Changed
 
 - A `move`, `attack_move` or `attack` to a unit made this tick goes out at once, as a mission DLL's `CreateUnit`
@@ -17,15 +15,11 @@ The full list is in CHANGES.md under [0.8.6].
 
 ## [0.8.5] - 2026-11-21
 
-The full list is in CHANGES.md under [0.8.5].
-
 ### Fixed
 
 - `game.morale_steady()` and `game.free_morale()` with no player (every player) did nothing in 0.8.4.
 
 ## [0.8.4] - 2026-11-20
-
-The full list is in CHANGES.md under [0.8.4].
 
 ### Added
 
@@ -46,8 +40,6 @@ The full list is in CHANGES.md under [0.8.4].
 
 ## [0.8.3] - 2026-11-19
 
-The full list is in CHANGES.md under [0.8.3].
-
 ### Added
 
 - `campaign.save(name, tbl)` / `campaign.load(name)` / `campaign.delete(name)`: plain data a campaign mission saves
@@ -59,8 +51,6 @@ The full list is in CHANGES.md under [0.8.3].
 
 ## [0.8.2] - 2026-11-19
 
-The full list is in CHANGES.md under [0.8.2].
-
 ### Added
 
 - `OPU\logs\OP2Lua-<dll>-result.json`: how the mission ended (won, lost, aborted, victory, defeat, terminated), for
@@ -71,8 +61,6 @@ The full list is in CHANGES.md under [0.8.2].
 - The version only.
 
 ## [0.8.1] - 2026-11-18
-
-The full list is in CHANGES.md under [0.8.1].
 
 ### Added
 
@@ -98,8 +86,6 @@ The full list is in CHANGES.md under [0.8.1].
 
 ## [0.8.0] - 2026-11-18
 
-The full list is in CHANGES.md under [0.8.0].
-
 ### Added
 
 - `game.morale_steady(level, player)` locks one player's morale; `unit_stat`, `set_unit_stat` and `set_required_tech`
@@ -121,8 +107,6 @@ The full list is in CHANGES.md under [0.8.0].
 
 ## [0.7.9] - 2026-11-17
 
-The full list is in CHANGES.md under [0.7.9].
-
 ### Fixed
 
 - Placement takes `at = { x =, y = }` and the game's own tile, `{ x =, y =, raw = true }`, as script calls do.
@@ -133,8 +117,6 @@ The full list is in CHANGES.md under [0.7.9].
 - docs/FILE-FORMAT.md: the mission file reference.
 
 ## [0.7.6] - 2026-11-17
-
-The full list is in CHANGES.md under [0.7.6].
 
 ### Added
 
@@ -148,8 +130,6 @@ The full list is in CHANGES.md under [0.7.6].
   Post's turret version of the weapon (StarflareGP / SupernovaGP), as the stock missions make it.
 
 ## [0.7.5] - 2026-11-17
-
-The full list is in CHANGES.md under [0.7.5].
 
 ### Added
 
