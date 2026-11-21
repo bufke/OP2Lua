@@ -1,0 +1,141 @@
+name: Build
+
+# Builds everything in this repository on every push and pull request and keeps each build as a downloadable artifact
+# (Actions > the run > Artifacts): the core (OP2LuaCore.dll and the LuaMission.dll stub, 32-bit MSVC), the VB.NET
+# editor, the Rust editor (Windows and Linux, with its tests and clippy) and the new-mission tool. Nothing here runs
+# the game: its files can't be in CI, so missions are still tested locally.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    name: Versions agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: CMakeLists.txt, OP2LuaCore.h and both editors give one version
+        run: |
+          cmake=$(sed -n 's/^project(OP2Lua VERSION \([0-9.]*\) .*/\1/p' CMakeLists.txt)
+          core=$(sed -n 's/^#define OP2LUA_VERSION "\(.*\)"/\1/p' src/OP2LuaCore.h)
+          vb=$(sed -n 's/.*ApplicationVersion As String = "\(.*\)"/\1/p' op2lua-editor/OP2LuaEditor/GlobalVariables.vb)
+          rust=$(sed -n '0,/^version = /s/^version = "\(.*\)"/\1/p' op2lua-editor-rust/Cargo.toml)
+          echo "CMakeLists.txt $cmake, OP2LuaCore.h $core, VB editor $vb, Rust editor $rust"
+          test -n "$cmake" && test "$cmake" = "$core" && test "$cmake" = "$vb" && test "$cmake" = "$rust"
+
+  core:
+    name: Core (Windows, MSVC x86)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set VSPATH=%%I
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars32.bat" || exit /b 1
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release || exit /b 1
+          cmake --build build || exit /b 1
+      - name: Version resource
+        shell: pwsh
+        run: |
+          $v = (Get-Item build\OP2LuaCore.dll).VersionInfo
+          "OP2LuaCore.dll $($v.FileVersion) ($($v.FileDescription))"
+          $want = (Select-String -Path CMakeLists.txt -Pattern '^project\(OP2Lua VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          if (-not $v.FileVersion.StartsWith($want)) { throw "OP2LuaCore.dll is $($v.FileVersion), CMakeLists.txt says $want" }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: OP2LuaCore
+          path: |
+            build/OP2LuaCore.dll
+            build/LuaMission.dll
+          if-no-files-found: error
+
+  vb-editor:
+    name: VB.NET editor (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The project references OP2UtilityDotNet.dll at ..\..\..\other (beside the checkout); the SDK repository ships
+      # the same DLL, so take it from there at a fixed commit.
+      - name: OP2UtilityDotNet.dll
+        shell: bash
+        run: |
+          mkdir -p ../other
+          curl -fsSL -o ../other/OP2UtilityDotNet.dll \
+            https://raw.githubusercontent.com/leviathan400/OP2LuaSDK/eb4b10ea36914ed30cec270958a41e1da345cf73/tools/OP2UtilityDotNet.dll
+      - name: Build
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe`) do set MSBUILD=%%I
+          "%MSBUILD%" op2lua-editor\OP2LuaEditor.sln -p:Configuration=Release -p:OutDir=%GITHUB_WORKSPACE%\vbbuild\ -nologo -v:m || exit /b 1
+      - name: Version
+        shell: pwsh
+        run: (Get-Item vbbuild\OP2LuaEditor.exe).VersionInfo | Format-List FileVersion, FileDescription
+      - uses: actions/upload-artifact@v7
+        with:
+          name: OP2LuaEditor-vb
+          path: |
+            vbbuild/OP2LuaEditor.exe
+            vbbuild/OP2LuaEditor.exe.config
+            vbbuild/OP2UtilityDotNet.dll
+          if-no-files-found: error
+
+  rust-editor:
+    name: Rust editor (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-latest, exe: OP2LuaEditor.exe }
+          # The oldest supported Ubuntu, so the program runs on older glibc.
+          - { name: linux-x64, os: ubuntu-22.04, exe: OP2LuaEditor }
+    defaults:
+      run:
+        shell: bash
+        working-directory: op2lua-editor-rust
+    steps:
+      - uses: actions/checkout@v7
+      # The window (eframe) needs these headers on Linux, and sound (rodio) ALSA's.
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libasound2-dev libxkbcommon-dev libwayland-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev
+      # rust-toolchain.toml picks the toolchain; rustup installs it on first use.
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: op2lua-editor-rust
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Test
+        run: cargo test --release --locked
+      - name: Build
+        run: cargo build --release --locked
+      - uses: actions/upload-artifact@v7
+        with:
+          name: OP2LuaEditor-rust-${{ matrix.name }}
+          path: op2lua-editor-rust/target/release/${{ matrix.exe }}
+          if-no-files-found: error
+
+  newmission:
+    name: op2lua-newmission (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build
+        shell: bash
+        run: |
+          cmake -S op2lua-newmission -B build-newmission -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-newmission --config Release
