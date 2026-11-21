@@ -5,6 +5,16 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-11-21
+
+The full list is in CHANGES.md under [0.8.6].
+
+### Changed
+
+- A `move`, `attack_move` or `attack` to a unit made this tick goes out at once, as a mission DLL's `CreateUnit`
+  then `DoMove` does. Through 0.8.5 such an order was held about 25 ticks, so a mission's reinforcements set off
+  late. An order a unit can't take is still queued and retried each tick, up to 20 times.
+
 ## [0.8.5] - 2026-11-21
 
 The full list is in CHANGES.md under [0.8.5].
