@@ -293,7 +293,7 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
-// game.version() -> "0.8.4", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+// game.version() -> "0.8.5", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
 std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
 
 // game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
@@ -1619,7 +1619,7 @@ void RegisterBindings(sol::state& lua) {
   // The multiplayer lobby's choices (a Colony game has no lobby: these read the game's defaults).
   game.set_function("initial_units",  []() { return Game::InitialUnits(); });  // starting vehicles, 0-12
   game.set_function("uses_day_night", []() { return Game::UsesDayNight(); });  // day and night on
-  game.set_function("uses_morale",    []() { return Game::UsesMorale();   });  // morale free (not steady)
+  game.set_function("uses_morale",    []() { return Game::UsesMorale();   });  // the lobby's Morale Steady is off
   game.set_function("beacons",     &Game_Beacons);     // discover mining beacons (perception)
   game.set_function("find_place",  &Game_FindPlace);   // find a clear spot to build/place a type
   game.set_function("find_build_site", &Game_FindBuildSite); // footprint-valid structure site (DoBuild anchor)
