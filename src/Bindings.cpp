@@ -322,7 +322,7 @@ void Game_MoraleSteady(sol::object level, sol::object player) {
                                            : Tethys::MoraleLevel::Good;
   const bool all = !player.valid() || player == sol::lua_nil;
   const int num = all ? static_cast<int>(Tethys::AllPlayers) : PlayerArg(player, "morale_steady");
-  if (num < 0) return;
+  if (!all && num < 0) return;
   Game::ForceMoraleLevel(lvl, num);
   LOG_MISSION(INFO) << "game.morale_steady";
 }
@@ -331,7 +331,7 @@ void Game_MoraleSteady(sol::object level, sol::object player) {
 void Game_FreeMorale(sol::object player) {
   const bool all = !player.valid() || player == sol::lua_nil;
   const int num = all ? static_cast<int>(Tethys::AllPlayers) : PlayerArg(player, "free_morale");
-  if (num >= 0) Game::FreeMoraleLevel(num);
+  if (all || num >= 0) Game::FreeMoraleLevel(num);
 }
 
 // game.create_unit{ type=, player=, at=, count=, weapon=, direction=, lights= } -> { Unit, ... }

@@ -5,6 +5,10 @@ For the author-facing SDK, see the OP2LuaSDK changelog.
 
 ## [Unreleased]
 
+### Fixed
+
+- `game.morale_steady()` and `game.free_morale()` with no player (every player) did nothing in 0.8.4.
+
 ## [0.8.4] - 2026-11-20
 
 The full list is in CHANGES.md under [0.8.4].
