@@ -33,13 +33,10 @@ struct Region {
   int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
 };
 
-// Unit orders (move/attack_move) are queued and issued one tick LATER. A freshly-created unit
-// cannot be commanded the same tick it's created (OP2 hasn't finished registering it -> crash).
+// Unit orders (move/attack_move/attack) are given at once; one a unit can't take yet is queued and retried.
 // FlushUnitOrders() is called at the start of each scheduler pump; ResetUnitOrders() on load.
 void FlushUnitOrders();
 void ResetUnitOrders();
-// Notes the tick a unit was made, so its first orders wait until it can take them (FlushUnitOrders).
-void NoteUnitMade(int unitId);
 // Stops a WAV that game.play_wav started (the mission is unloading).
 void StopMissionWav();
 

@@ -96,14 +96,10 @@ constexpr int kTicksPerSecond = 100;             // ~1 mark; "game time", determ
 constexpr int kTicksPerMinute = 60 * kTicksPerSecond;
 constexpr int kGaiaPlayer     = 6;               // the "native"/Gaia player that owns mining beacons
 
-// Deferred unit orders (see ApiTypes.h). Issued one tick after they're requested.
+// Unit orders (see ApiTypes.h). Given at once; one the unit can't take yet waits in gOrders and is retried.
 enum class OrderKind { Move, AttackUnit, AttackGround };
-struct DeferredOrder { Unit unit; OrderKind kind; int x; int y; Unit target; int attempts = 0; int readyTick = -1; };
+struct DeferredOrder { Unit unit; OrderKind kind; int x; int y; Unit target; int attempts = 0; };
 std::vector<DeferredOrder> gOrders;
-// The tick each unit made while the mission runs was made on (create_unit and the game's OnCreateUnit event), by unit
-// id. Only orders to a unit made this tick or the last wait in gOrders; the rest are given at once, as a mission DLL
-// gives them.
-std::map<int, int> gMadeTick;
 
 // Resolve a sound argument: a name ("Savant4"), a raw integer SoundID, or nil -> default.
 Tethys::SoundID ResolveSound(const sol::object& s, Tethys::SoundID dflt) {
@@ -382,7 +378,7 @@ sol::table Game_CreateUnit(sol::table opts, sol::this_state ts) {
                           : GameMap::FindUnitPlacementLocation(at, type);
     if (spot.x < 0) spot = Location(at.x + (i % width), at.y + (i / width));   // finder failed -> fallback
     Unit u = Game::CreateUnit(type, spot, owner, weapon, dir, lights);
-    if (u.IsValid()) { ++created; NoteUnitMade(u.GetID()); }
+    if (u.IsValid()) ++created;
     out[i + 1] = u;
   }
   // AI spawns -> the AI log; human-player reinforcements -> the mission log.
@@ -1223,21 +1219,16 @@ static bool GuardedDevelop(Unit u, MapID t) {
 }
 
 void FlushUnitOrders() {
-  // A freshly-created unit is DRAWN and IsLive() within a tick, but its movement/command state isn't
-  // fully initialized for several ticks. Executing a move/attack command on it before then crashes the
-  // GAME in ProcessUnits -> ProcessCommands (write through an uninitialized field). CmdMove itself
-  // succeeds, so we can't catch it - the only safe fix is to hold the command until the unit has aged.
-  constexpr int kDelayTicks  = 25;          // ~aged a full game-second before we command it (invisible in play)
+  // Orders a unit couldn't take when they were given (the guarded call faulted), retried once per pump. Orders to a
+  // unit made this tick go out at once, as a mission DLL's DoMove does: the old crash on them (0.5.1) was Tethys's raw
+  // CmdMove thunk, not the unit's age, and DoMove has sent a command packet since 0.5.2.
   constexpr int kMaxAttempts = 20;
   const int now = Game::Tick();
   std::vector<DeferredOrder> retry;
   int issued = 0;
   for (auto& o : gOrders) {
-    if (!o.unit.IsLive()) continue;                        // unit gone before its order ripened -> drop it
-    if (o.readyTick < 0) o.readyTick = now + kDelayTicks;  // first time seen live: start the safety clock
-    if (now < o.readyTick) { retry.push_back(o); continue; }  // not aged enough yet -> hold it
+    if (!o.unit.IsLive()) continue;                        // unit gone before it could take the order -> drop it
     if (IssueOrderGuarded(o)) { ++issued; continue; }     // command issued cleanly
-    // Still not command-ready (would have crashed) -> keep and retry next cycle.
     if (++o.attempts < kMaxAttempts) retry.push_back(o);
     else LOG_AI(WARNING) << "dropped a unit order after " << kMaxAttempts << " attempts";
   }
@@ -1245,12 +1236,12 @@ void FlushUnitOrders() {
   if (issued > 0) LOG_AI(INFO) << "issued " << issued << " queued unit order(s) at tick " << now;
   gOrders.swap(retry);
 }
-void ResetUnitOrders() { gOrders.clear(); gMadeTick.clear(); }
-void NoteUnitMade(int unitId) { gMadeTick[unitId] = Game::Tick(); }
+void ResetUnitOrders() { gOrders.clear(); }
 void StopMissionWav() { StopWav(); }
 
-// Gives a unit an order: at once, or for a unit made this tick or the last (whose command state may not be ready:
-// see FlushUnitOrders), queued until it can take it. A newer order replaces one still queued for the unit.
+// Gives a unit an order at once, as a mission DLL's DoMove / DoAttack do, a unit made this tick included. One it can't
+// take (not live, or the guarded call faulted) is queued and retried (FlushUnitOrders). A newer order replaces one
+// still queued for the unit.
 static void Order(DeferredOrder o) {
   // The game's Unit::DoMove (0x476240) ignores a move to a tile off its grid (x outside the padded width at 0x54F808,
   // y outside the height at 0x54F810), so the unit keeps the order it had; a mission's off-map move does the same here.
@@ -1258,9 +1249,7 @@ static void Order(DeferredOrder o) {
   const int id = o.unit.GetID();
   gOrders.erase(std::remove_if(gOrders.begin(), gOrders.end(), [id](const DeferredOrder& q) { return q.unit.GetID() == id; }),
                 gOrders.end());
-  const auto made = gMadeTick.find(id);
-  const bool fresh = (made != gMadeTick.end()) && (Game::Tick() - made->second <= 1);
-  if (!fresh && o.unit.IsLive() && IssueOrderGuarded(o)) return;
+  if (o.unit.IsLive() && IssueOrderGuarded(o)) return;
   gOrders.push_back(o);
 }
 

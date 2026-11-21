@@ -485,7 +485,6 @@ OP2LUACORE_API void OP2LuaCore_OnChat(void* pArgs) {
 OP2LUACORE_API void OP2LuaCore_OnCreateUnit(void* pArgs) {
   auto* a = static_cast<OnCreateUnitArgs*>(pArgs);
   if (a == nullptr) return;
-  OP2Lua::NoteUnitMade(a->unit.GetID());
   DispatchVoid(g.onCreateUnit, "on_create_unit", a->unit);
 }
 
