@@ -289,7 +289,7 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
-// game.version() -> "0.8.6", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+// game.version() -> "0.8.7", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
 std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
 
 // game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
@@ -1261,6 +1261,7 @@ void FireTrigger(void* pArgs) {
   const auto it = gTriggerFns.find(a->trigger.GetID());
   if (it == gTriggerFns.end()) return;
   sol::protected_function fn = it->second;   // a copy: the function may make more triggers
+  Budget::Call budget;
   try {
     sol::protected_function_result r = fn(a->trigger);
     if (!r.valid()) { sol::error e = r; LOG_MISSION(ERROR) << "trigger " << a->trigger.GetID() << ": " << e.what(); }
@@ -2107,6 +2108,17 @@ void RegisterBindings(sol::state& lua) {
       // union field in OP2 (a unit is only ever one of those), so set_kit / set_weapon / set_cargo are
       // really the same slot under different names - matching the unit type you call them on.
       "kit",            sol::property([](const Unit& u) { return NameFromMapId(u.GetConVecCargo().unitType); }),
+      // [ConVec] the kit's weapon (a Guard Post kit's turret, under the name set_kit takes as its topping), nil
+      // without one. unit.weapon reads the kit's own slot on a ConVec, not this.
+      "kit_weapon",     sol::property([](const Unit& u, sol::this_state ts) {
+                          // nil unless a ConVec carries a kit with a named weapon: on other units, and on a
+                          // ConVec without a kit, the slot holds something else.
+                          sol::state_view L(ts);
+                          if (u.GetType() != MapID::ConVec) return sol::make_object(L, sol::lua_nil);
+                          const auto cargo = u.GetConVecCargo();
+                          const std::string name = (cargo.unitType == MapID::None || cargo.cargoOrWeaponType == MapID::None)
+                                                       ? std::string() : std::string(NameFromMapId(cargo.cargoOrWeaponType));
+                          return name.empty() ? sol::make_object(L, sol::lua_nil) : sol::make_object(L, name); }),
       "set_kit",        [](Unit& u, const std::string& type, sol::optional<std::string> topping) {
                           const MapID kit = MapIdFromName(type);
                           if (u.IsLive()) u.SetCargo(kit, topping ? WeaponFor(kit, MapIdFromName(*topping)) : MapID::None); },

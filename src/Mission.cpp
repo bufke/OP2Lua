@@ -75,6 +75,7 @@ template <typename... Args>
 void DispatchVoid(sol::protected_function& fn, const char* name, Args&&... args) {
   if (!g.active || !fn.valid()) return;
   Guard::Scope guard;   // a fault in a game call ends this callback as a Lua error
+  Budget::Call budget;  // so does running past the instruction limit
   try {
     sol::protected_function_result r = fn(std::forward<Args>(args)...);
     if (!r.valid()) { sol::error e = r; LogCbError(name, e.what()); }
@@ -86,6 +87,7 @@ template <typename... Args>
 bool DispatchBool(sol::protected_function& fn, const char* name, bool dflt, Args&&... args) {
   if (!g.active || !fn.valid()) return dflt;
   Guard::Scope guard;
+  Budget::Call budget;
   try {
     sol::protected_function_result r = fn(std::forward<Args>(args)...);
     if (!r.valid()) { sol::error e = r; LogCbError(name, e.what()); return dflt; }

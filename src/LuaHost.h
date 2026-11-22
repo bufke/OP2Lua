@@ -9,9 +9,8 @@ namespace OP2Lua {
 
 // Owns the embedded Lua interpreter and the bindings to the game.
 //
-// There is a single shared state for the running mission. (OP2 runs one mission at a time.)
-// Phase 6 will sandbox this state for multiplayer determinism; for now it opens the standard
-// safe libraries only.
+// There is a single shared state for the running mission. (OP2 runs one mission at a time.) It opens only the
+// libraries a mission may use (see Init) and counts the instructions each call runs (Budget).
 class LuaHost {
  public:
   static LuaHost& Get();
@@ -32,6 +31,28 @@ class LuaHost {
   sol::state lua_;
   bool initialized_ = false;
 };
+
+// The limit for runaway Lua: each call from the game into the mission's Lua (on_init, on_tick, an event, a trigger's
+// function, the script's first run, its placement, and each after/every/when function the scheduler runs) may run
+// kInstructions Lua instructions. Past that the call fails with a Lua error naming where it was running, and stays
+// failed until it returns (a pcall inside the script can't catch it and carry on); the error is logged and the call
+// dropped, and the game goes on. Instructions are counted, not time, so every machine in a multiplayer game stops a
+// call at the same point. Time spent inside a game call isn't counted.
+namespace Budget {
+constexpr long long kInstructions = 25000000;
+constexpr int kHookEvery = 1000;   // the count hook's interval: where a call that runs out stops
+// Held around a call into the mission's Lua. The outermost one starts a fresh budget; one made inside a running call
+// (an event the call set off) shares it, so a loop can't renew its own budget.
+class Call {
+ public:
+  Call();
+  ~Call();
+  Call(const Call&) = delete;
+  Call& operator=(const Call&) = delete;
+  // Whether this call ran out of instructions.
+  bool Exhausted() const;
+};
+}  // namespace Budget
 
 // Installs the author-facing API (game.*, players, units, scheduler, ...). Defined in Bindings.cpp.
 void RegisterBindings(sol::state& lua);

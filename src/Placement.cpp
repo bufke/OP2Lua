@@ -399,6 +399,7 @@ bool Load(const std::string& placementPath) {
   }
 
   sol::state& L = LuaHost::Get().lua();
+  Budget::Call budget;
   sol::protected_function_result r =
       L.safe_script_file(placementPath, &sol::script_pass_on_error);
   if (!r.valid()) {

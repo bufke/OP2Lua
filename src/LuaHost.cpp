@@ -34,7 +34,98 @@ int BindingError(lua_State* L, sol::optional<const std::exception&>, sol::string
   return 1;
 }
 
+// The budget of the call in progress (Budget::Call): instructions counted, whether it ran out, and how many calls
+// are open (only the outermost starts a fresh budget).
+long long gUsed = 0;
+bool gExhausted = false;
+int gDepth = 0;
+
+// "Name.lua:42" (the file name without its folder), or "?" when Lua can't say.
+std::string Where(const lua_Debug& ar) {
+  std::string w = ar.short_src;
+  const size_t slash = w.find_last_of("\\/");
+  if (slash != std::string::npos) w.erase(0, slash + 1);
+  if (ar.currentline > 0) w += ":" + std::to_string(ar.currentline);
+  else if (ar.linedefined > 0) w += ":" + std::to_string(ar.linedefined);
+  return w.empty() ? "?" : w;
+}
+
+void CountHook(lua_State* L, lua_Debug* ar);
+
+// The hook's interval: every Budget::kHookEvery instructions, or every instruction once the call has run out, so the
+// error reaches the code around a pcall that catches it (at a fixed interval it would land inside the pcall each time).
+void SetHookEvery(lua_State* L, int every) { lua_sethook(L, &CountHook, LUA_MASKCOUNT, every); }
+void ResetBudget(lua_State* L) {
+  if (gExhausted && L != nullptr) SetHookEvery(L, Budget::kHookEvery);
+  gUsed = 0;
+  gExhausted = false;
+}
+
+// The count hook. Outside a call (the runtime's own setup) nothing is counted.
+void CountHook(lua_State* L, lua_Debug* ar) {
+  if (gDepth == 0) return;
+  if (!gExhausted) {
+    gUsed += Budget::kHookEvery;
+    if (gUsed <= Budget::kInstructions) return;
+  }
+  std::string where = "?";
+  if (lua_getinfo(L, "Sl", ar) != 0) where = Where(*ar);
+  if (!gExhausted) {
+    gExhausted = true;
+    SetHookEvery(L, 1);
+    LOG(WARNING) << "a mission call ran more than " << Budget::kInstructions / 1000000
+                 << " million Lua instructions (at " << where << "); dropping it";
+  }
+  lua_pushfstring(L, "%s: the mission's script ran more than %d million instructions in one call (an endless loop?); "
+                  "the call was dropped", where.c_str(), static_cast<int>(Budget::kInstructions / 1000000));
+  lua_error(L);
+}
+
+std::string FunctionWhereOf(lua_State* L, int index);
+
+// __op2lua_run(fn, kind) -> ok, result or error, dropped: the scheduler runs each after/every/when function through
+// this, so each gets a budget of its own (the pump's own instructions keep theirs). `dropped` is true when it ran out;
+// the Mission log then names it (`kind`, e.g. "every() function", and where it was defined).
+int RunScheduled(lua_State* L) {
+  lua_settop(L, 2);   // fn: anything callable; lua_pcall reports what isn't, as pcall did
+  const std::string kind = lua_isstring(L, 2) ? lua_tostring(L, 2) : "scheduled function";
+  const std::string defined = FunctionWhereOf(L, 1);
+  lua_settop(L, 1);
+  const long long pumpUsed = gUsed;
+  ResetBudget(L);
+  const int status = lua_pcall(L, 0, 1, 0);
+  const bool dropped = gExhausted;
+  ResetBudget(L);
+  gUsed = pumpUsed;
+  if (dropped) {
+    const char* why = lua_isstring(L, -1) ? lua_tostring(L, -1) : "ran out of instructions";
+    LOG_MISSION(ERROR) << kind << " defined at " << defined << " dropped: " << why;
+  }
+  lua_pushboolean(L, status == LUA_OK);
+  lua_insert(L, -2);
+  lua_pushboolean(L, dropped);
+  return 3;
+}
+
+// Where the function at `index` was defined ("Name.lua:12"), or "?".
+std::string FunctionWhereOf(lua_State* L, int index) {
+  if (lua_type(L, index) != LUA_TFUNCTION) return "?";
+  lua_Debug ar{};
+  lua_pushvalue(L, index);
+  if (lua_getinfo(L, ">S", &ar) == 0) return "?";
+  ar.currentline = -1;
+  return Where(ar);
+}
+
 }  // namespace
+
+Budget::Call::Call() {
+  if (gDepth++ == 0) ResetBudget(LuaHost::Get().lua().lua_state());
+}
+Budget::Call::~Call() {
+  if (--gDepth == 0) ResetBudget(LuaHost::Get().lua().lua_state());
+}
+bool Budget::Call::Exhausted() const { return gExhausted; }
 
 void LuaHost::Init() {
   // Recreate a fresh state on each call so every mission gets a clean global environment
@@ -56,12 +147,21 @@ void LuaHost::Init() {
   lua_["loadfile"] = sol::lua_nil;
   lua_["load"] = sol::lua_nil;
   lua_.set_exception_handler(&BindingError);
+  gUsed = 0;
+  gExhausted = false;
+  gDepth = 0;
+  SetHookEvery(lua_.lua_state(), Budget::kHookEvery);
+  lua_register(lua_.lua_state(), "__op2lua_run", &RunScheduled);
 
   RegisterBindings(lua_);
 
   // Runtime preamble: the tick-based scheduler (after/every/when), the time helpers
   // (game.minutes/seconds), and the pump that AIProc drives. Tick-based => multiplayer-safe.
   static const char* kPreamble = R"LUA(
+-- The scheduler's own: each after/every/when function runs with a budget of its own (__op2lua_run, LuaHost.cpp, which
+-- logs a dropped one). Kept as a local so a mission can't call or replace it.
+local _run = __op2lua_run
+__op2lua_run = nil
 local _timers, _whens = {}, {}
 -- Timers / conditions registered *during* a pump (i.e. from inside a firing callback - e.g. an
 -- after() that schedules the next after()) are buffered here and merged in once the pump finishes.
@@ -122,10 +222,12 @@ function game.minutes(n) return n * game.ticks_per_minute end
 function game.seconds(n) return n * game.ticks_per_second end
 
 -- Run fn, reporting (never raising) any error. The log call is itself guarded so a broken
--- print() can never abort the scheduler.
-local function safe(fn)
-  local ok, err = pcall(fn)
-  if not ok then pcall(function() print('[mission error] ' .. tostring(err)) end) end
+-- print() can never abort the scheduler. Returns true when the instruction limit dropped it (logged by _run); a
+-- repeating one (every, when) is then cancelled.
+local function safe(fn, kind)
+  local ok, err, out = _run(fn, kind)
+  if not ok and not out then pcall(function() print('[mission error] ' .. tostring(err)) end) end
+  return out
 end
 
 -- Driven once per AIProc tick. Deterministic iteration order (arrays) => multiplayer-safe.
@@ -136,7 +238,8 @@ function __op2lua_pump()
   for _, e in ipairs(_timers) do
     if not e.cancelled then
       if now >= e.at then
-        safe(e.fn)
+        local out = safe(e.fn, e.every and 'every() function' or 'after() function')
+        if out then e.cancelled = true end
         if e.every and not e.cancelled then e.at = e.at + e.every; keep[#keep + 1] = e end
       else
         keep[#keep + 1] = e
@@ -147,8 +250,10 @@ function __op2lua_pump()
 
   local wkeep = {}
   for _, w in ipairs(_whens) do
-    local ok, fired = pcall(w.pred)
-    if ok and fired then safe(w.fn) else wkeep[#wkeep + 1] = w end
+    local ok, fired, out = _run(w.pred, 'when() condition')
+    if out then -- dropped: the condition is removed
+    elseif ok and fired then safe(w.fn, 'when() function')
+    else wkeep[#wkeep + 1] = w end
   end
   _whens = wkeep
 
@@ -179,6 +284,7 @@ void LuaHost::Shutdown() {
 
 bool LuaHost::RunFile(const std::string& path) {
   Guard::Scope guard;   // the script's top level may call the game too
+  Budget::Call budget;
   sol::protected_function_result result = lua_.safe_script_file(
       path, &sol::script_pass_on_error);
 
