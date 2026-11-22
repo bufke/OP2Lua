@@ -28,10 +28,17 @@
 #include "ErrorHandling.h"
 #include "Guard.h"
 #include "Hackaray.h"
+#include "Persist.h"
+#include "SaveGame.h"
 
 #include "Tethys/API/Mission.h"
 #include "Tethys/Game/GameStartInfo.h"   // MissionResults (OnEndMission)
 #include "Tethys/Game/GameImpl.h"        // the game's end reason
+#include "Tethys/Game/MissionManager.h"  // the mission DLL the game loaded
+#include <algorithm>
+using std::max;   // Tethys's headers use unqualified min()/max() (NOMINMAX build)
+using std::min;
+#include "Tethys/API/Game.h"             // Game::AddMessage (a saved game's notice)
 #include "Tethys/API/Unit.h"
 
 namespace fs = std::filesystem;
@@ -50,6 +57,10 @@ struct MissionState {
 MissionState g;
 std::string gDir;   // the running mission's folder (Dir())
 std::string gBase;  // the running mission DLL's name without .dll (its log and result file names)
+bool gPrepared = false;       // the logs point at the mission DLL the game loaded last (GetSaveRegions)
+bool gStarted = false;        // the script has run for this mission DLL (InitProc, or a saved game's restore)
+bool gLoadedSave = false;     // a saved game was put back; its first tick calls on_load_save
+std::string gLoadNotice;      // a message for the player on the first tick after a load
 
 void LogCbError(const char* cb, const std::string& what) {
   // A script error is a mission event - send it to the mission log, not the framework Main log.
@@ -290,13 +301,18 @@ std::string StripColonyPrefix(const std::string& base) {
   return base;
 }
 
-// Load a mission's scripts into a fresh Lua state and resolve its callbacks.
-// Prefers <dir>/<base>.lua (+ <base>.placement.lua); falls back to mission.lua (+ placement.lua).
-void LoadMissionDir(const std::string& dir, const std::string& base) {
+// Points the logs at a mission and forgets the previous one. The script runs later: at InitProc for a new game
+// (StartScript), or not at all for a saved game, whose script state is put back (RestoreSave).
+void PrepareMission(const std::string& dir, const std::string& base) {
   EnsureCoreInit();                      // one-time: main log + crash reporter + mark stamp + pin
+  if (gPrepared && dir == gDir && base == gBase) return;   // the same DLL again (the stub's InitProc after GetSaveRegions)
+  gPrepared = true;
   gDir = dir;
   gBase = base;
   gEnded = false;
+  gStarted = false;
+  gLoadedSave = false;
+  gLoadNotice.clear();
   static const bool atExitSet = (std::atexit(FinishAtExit), true);   // after the crash reporter's: runs before it
   (void)atExitSet;
 
@@ -311,19 +327,28 @@ void LoadMissionDir(const std::string& dir, const std::string& base) {
   SetAIStatusPath(AIStatusPath(base));   // log.ai_status overwrites this snapshot file each call
   LogBuildStamp();                       // stamp version + DLL build time (-> Main log)
   Reset();                               // release any previous callbacks/placement (old state alive)
+}
+
+// The mission's scripts: <dir>/<base>.lua (+ <base>.placement.lua), else mission.lua (+ placement.lua).
+std::string PlacementPath() {
+  const std::string alt = StripColonyPrefix(gBase);   // cStrikeTeam -> StrikeTeam (scripts need no 'c')
+  return PickExisting(gDir + "\\" + gBase + ".placement.lua", gDir + "\\" + alt + ".placement.lua",
+                      gDir + "\\placement.lua");
+}
+std::string MissionLuaPath() {
+  const std::string alt = StripColonyPrefix(gBase);
+  return PickExisting(gDir + "\\" + gBase + ".lua", gDir + "\\" + alt + ".lua", gDir + "\\mission.lua");
+}
+
+// A fresh Lua state with the mission's placement read.
+void NewState() {
+  Reset();
   LuaHost::Get().Init();      // fresh Lua state + bindings for this mission
+  Placement::Load(PlacementPath());
+  LogMissionMap(gBase);   // baked .map (ground truth) + warn if placement.lua's map= disagrees
+}
 
-  const std::string alt = StripColonyPrefix(base);   // cStrikeTeam -> StrikeTeam (scripts need no 'c')
-  Placement::Load(PickExisting(dir + "\\" + base + ".placement.lua",
-                               dir + "\\" + alt  + ".placement.lua",
-                               dir + "\\placement.lua"));
-  LogMissionMap(base);   // baked .map (ground truth) + warn if placement.lua's map= disagrees
-
-  const std::string missionLua = PickExisting(dir + "\\" + base + ".lua",
-                                              dir + "\\" + alt  + ".lua",
-                                              dir + "\\mission.lua");
-  if (!LuaHost::Get().RunFile(missionLua)) return;  // RunFile reports load errors
-
+void ResolveCallbacks() {
   sol::state& L = LuaHost::Get().lua();
   g.onInit        = Resolve(L, "on_init");
   g.onTick        = Resolve(L, "on_tick");
@@ -338,8 +363,171 @@ void LoadMissionDir(const std::string& dir, const std::string& base) {
   g.onLoadSave    = Resolve(L, "on_load_save");
   g.pump          = Resolve(L, "__op2lua_pump");  // scheduler pump from the preamble
   g.active = true;
-  LOG(INFO) << "Mission loaded: " << missionLua;
 }
+
+// A new game: run the mission's script (its top level), then on_load.
+void StartScript() {
+  if (gStarted) return;
+  gStarted = true;
+  NewState();
+  const std::string missionLua = MissionLuaPath();
+  if (!LuaHost::Get().RunFile(missionLua)) return;  // RunFile reports load errors
+  ResolveCallbacks();
+  LOG(INFO) << "Mission loaded: " << missionLua;
+  DispatchBool(g.onLoad, "on_load", true);
+}
+
+// The mission DLL the game has loaded (MissionManager's module): its folder and name.
+bool LoadedMissionDll(std::string& dir, std::string& base) {
+  const auto* mm = Tethys::MissionManager::GetInstance();
+  if (mm == nullptr || mm->hModule_ == nullptr) return false;
+  wchar_t pathW[MAX_PATH] = {};
+  if (GetModuleFileNameW(mm->hModule_, pathW, MAX_PATH) == 0) return false;
+  const std::string full = fs::path(pathW).u8string();
+  const size_t slash = full.find_last_of("\\/");
+  dir = slash != std::string::npos ? full.substr(0, slash) : ".";
+  base = slash != std::string::npos ? full.substr(slash + 1) : full;
+  const size_t dot = base.find_last_of('.');
+  if (dot != std::string::npos) base.resize(dot);
+  return true;
+}
+
+// ---- saved games (SaveGame.cpp hooks the game's save and load) ----
+// A save's region: "OP2LuaSv", the format, the core's version, the mission's name, whether a script was running,
+// then the Lua values (Persist), the bindings' state and hackaray's.
+constexpr char kSaveMagic[8] = { 'O', 'P', '2', 'L', 'u', 'a', 'S', 'v' };
+constexpr uint32_t kSaveFormat = 1;
+
+// Runs `body` in a protected call, so a Lua error inside it (out of memory) comes back as a message.
+template <typename F>
+bool Protected(F& body, std::string& err) {
+  lua_State* L = LuaHost::Get().lua().lua_state();
+  struct Ctx { F* body; std::string* err; bool ok; } ctx{ &body, &err, false };
+  lua_pushcfunction(L, [](lua_State* S) -> int {
+    auto* c = static_cast<Ctx*>(lua_touserdata(S, 1));
+    c->ok = (*c->body)(S);
+    return 0;
+  });
+  lua_pushlightuserdata(L, &ctx);
+  if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+    err = lua_isstring(L, -1) ? lua_tostring(L, -1) : "Lua error";
+    lua_pop(L, 1);
+    return false;
+  }
+  return ctx.ok;
+}
+
+// Shows a message on the first tick after a load, when the game is running again.
+void NoticeAfterLoad(const std::string& text) { gLoadNotice = text; }
+}  // namespace
+
+// What the state byte after the header says.
+enum SavedScript : uint8_t { kNoScript = 0, kScriptState = 1, kScriptNotKept = 2 };
+
+void WriteHeader(Persist::Writer& w, SavedScript what) {
+  w.Bytes(kSaveMagic, sizeof kSaveMagic);
+  w.U32(kSaveFormat);
+  w.Str(OP2LUA_VERSION);
+  w.Str(CleanBase(gBase));
+  w.U8(what);
+}
+
+bool BuildSave(std::vector<char>& out, std::string& err) {
+  Persist::Writer w;
+  WriteHeader(w, g.active ? kScriptState : kNoScript);
+  bool kept = g.active;
+  if (g.active) {
+    DispatchVoid(g.onSave, "on_save");
+    auto body = [&](lua_State* L) {
+      lua_createtable(L, 0, 2);
+      lua_pushglobaltable(L);
+      lua_setfield(L, -2, "globals");
+      PushTriggerFunctions(L);
+      lua_setfield(L, -2, "triggers");
+      const bool ok = Persist::Save(L, -1, w, err);
+      lua_pop(L, 1);
+      return ok;
+    };
+    if (!Protected(body, err)) {
+      // The game is half way through writing the file, so the save goes on, without the script's state: a load then
+      // says why the script can't carry on.
+      LOG_MISSION(ERROR) << "saved game: the script's state can't be saved: " << err
+                         << ". The game is saved without it; loading it stops the mission's script.";
+      Game::AddMessage("OP2Lua: the mission script's state couldn't be saved; this save won't carry the script on. "
+                       "See the OP2Lua log.", static_cast<Tethys::SoundID>(0));
+      w = Persist::Writer();
+      WriteHeader(w, kScriptNotKept);
+      kept = false;
+      w.Str(err);
+    } else {
+      SaveBindingsState(w);
+      Hackaray::SaveState(w);
+    }
+  }
+  out.assign(w.out.begin(), w.out.end());
+  if (kept)
+    LOG_MISSION(INFO) << "saved game: the script's state saved (" << out.size() << " bytes, tick " << Game::Tick() << ")";
+  return true;
+}
+
+void RestoreSave(const char* data, size_t size) {
+  std::string dir, base;
+  if (LoadedMissionDll(dir, base)) PrepareMission(dir, base);
+  gStarted = true;   // the script's top level doesn't run again: its state comes from the save
+  Persist::Reader r(data, size);
+  char magic[sizeof kSaveMagic] = {};
+  r.Bytes(magic, sizeof magic);
+  const uint32_t format = r.U32();
+  const std::string version = r.Str(), savedBase = r.Str();
+  const uint8_t saved = r.U8();
+  const auto fail = [&](const std::string& why) {
+    LOG_MISSION(ERROR) << "saved game: the script's state couldn't be put back: " << why
+                       << ". The mission's script doesn't run in this game.";
+    NoticeAfterLoad("OP2Lua: this saved game's mission script couldn't carry on (" + why + "). See the OP2Lua log.");
+    Reset();
+  };
+  if (!r.Ok() || std::memcmp(magic, kSaveMagic, sizeof magic) != 0) { fail("its data isn't OP2Lua's"); return; }
+  if (format != kSaveFormat) { fail("it was saved by OP2Lua " + version + ", in a format this OP2Lua doesn't read"); return; }
+  if (savedBase != CleanBase(gBase)) { fail("it belongs to mission " + savedBase); return; }
+  LOG_MISSION(INFO) << "saved game: loading at tick " << Game::Tick() << " (mark " << Game::Tick() / 100
+                    << "), saved by OP2Lua " << version;
+  if (saved == kScriptNotKept) { fail("its state couldn't be saved: " + r.Str()); return; }
+  if (saved != kScriptState) {
+    Reset();
+    LOG_MISSION(WARNING) << "saved game: no script was running when it was saved";
+    return;
+  }
+  NewState();
+  std::string err;
+  if (!LuaHost::Get().LoadChunk(MissionLuaPath(), "mission script", err)) { fail(err); return; }
+  lua_pop(LuaHost::Get().lua().lua_state(), 1);   // compiled for its functions' prototypes, not run
+  auto body = [&](lua_State* L) {
+    if (!Persist::Restore(L, r, err)) return false;
+    lua_getfield(L, -1, "triggers");
+    if (lua_istable(L, -1)) SetTriggerFunctions(L, -1);
+    lua_pop(L, 2);
+    return true;
+  };
+  if (!Protected(body, err)) { fail(err); return; }
+  if (!RestoreBindingsState(r, err)) { fail(err); return; }
+  Hackaray::RestoreState(r);
+  ResolveCallbacks();
+  gLoadedSave = true;
+  LOG_MISSION(INFO) << "saved game: the script carries on (" << size << " bytes)";
+}
+
+void LoadedWithoutState() {
+  std::string dir, base;
+  if (LoadedMissionDll(dir, base)) PrepareMission(dir, base);
+  gStarted = true;
+  Reset();
+  LOG_MISSION(WARNING) << "saved game: saved before OP2Lua kept a mission's script state in the save (0.8.8); the "
+                          "mission's script doesn't run in this game";
+  NoticeAfterLoad("OP2Lua: this game was saved by an older OP2Lua, without the mission script's state. The script "
+                  "doesn't run; start the mission again to play it with its script.");
+}
+
+namespace {
 
 }  // namespace
 
@@ -407,6 +595,7 @@ void Reset() {
   OP2Lua::ResetUnitOrders();
   OP2Lua::StopMissionWav();
   OP2Lua::ResetTriggers();
+  OP2Lua::ResetObjectives();
   OP2Lua::Hackaray::Reset();
 }
 
@@ -419,10 +608,11 @@ using namespace OP2Lua::Mission;
 extern "C" {
 
 OP2LUACORE_API void OP2LuaCore_LoadMission(const char* missionDir, const char* baseName) {
-  LoadMissionDir(missionDir != nullptr ? missionDir : "", baseName != nullptr ? baseName : "");
+  PrepareMission(missionDir != nullptr ? missionDir : "", baseName != nullptr ? baseName : "");
 }
 
 OP2LUACORE_API int OP2LuaCore_InitProc(void) {
+  StartScript();   // a new game: the script's top level, then on_load
   {
     OP2Lua::Guard::Scope guard;
     try {
@@ -435,6 +625,14 @@ OP2LUACORE_API int OP2LuaCore_InitProc(void) {
 }
 
 OP2LUACORE_API void OP2LuaCore_AIProc(void) {
+  if (!gLoadNotice.empty()) {
+    Game::AddMessage(gLoadNotice, static_cast<Tethys::SoundID>(0));
+    gLoadNotice.clear();
+  }
+  if (gLoadedSave) {
+    gLoadedSave = false;
+    DispatchBool(g.onLoadSave, "on_load_save", true);
+  }
   {
     OP2Lua::Guard::Scope guard;
     try {
@@ -451,12 +649,21 @@ OP2LUACORE_API void OP2LuaCore_AIProc(void) {
   }
 }
 
+// The game has just loaded a mission DLL (MissionManager::LoadScript): a new game, or a saved game about to be read.
+// The previous mission is let go here (OPU 1.4.1 doesn't tell a mission DLL it is unloaded), and the DLL gets the
+// save region its script state goes in (SaveGame.h).
 OP2LUACORE_API void OP2LuaCore_GetSaveRegions(void* pSaveRegion) {
-  auto* s = static_cast<SaveRegion*>(pSaveRegion);
-  if (s != nullptr) { s->pData = nullptr; s->size = 0; }
+  std::string dir, base;
+  if (LoadedMissionDll(dir, base)) {
+    gPrepared = false;   // a new DLL, even with the same name
+    PrepareMission(dir, base);
+  }
+  OP2Lua::SaveGame::UseRegion(pSaveRegion);
 }
 
-OP2LUACORE_API int  OP2LuaCore_OnLoadMission(void*)     { return DispatchBool(g.onLoad, "on_load", true) ? 1 : 0; }
+// OPU 1.4.2's mission events. The core runs the script at InitProc and keeps saved games through its own hooks, so
+// these do nothing (on_save and on_load_save come from the hooks, on_load from StartScript).
+OP2LUACORE_API int  OP2LuaCore_OnLoadMission(void*)     { return 1; }
 OP2LUACORE_API void OP2LuaCore_OnEndMission(void* pArgs) {
   NoteEndEvent("OnEndMission");
   EndResult e = GameEnd();
@@ -468,8 +675,8 @@ OP2LUACORE_API void OP2LuaCore_OnEndMission(void* pArgs) {
   }
   FinishMission(e, "OnEndMission");
 }
-OP2LUACORE_API int  OP2LuaCore_OnSaveGame(void*)        { return DispatchBool(g.onSave, "on_save", true) ? 1 : 0; }
-OP2LUACORE_API int  OP2LuaCore_OnLoadSavedGame(void*)   { return DispatchBool(g.onLoadSave, "on_load_save", true) ? 1 : 0; }
+OP2LUACORE_API int  OP2LuaCore_OnSaveGame(void*)        { return 1; }
+OP2LUACORE_API int  OP2LuaCore_OnLoadSavedGame(void*)   { return 1; }
 
 OP2LUACORE_API int OP2LuaCore_OnUnloadMission(void*) {
   NoteEndEvent("OnUnloadMission");

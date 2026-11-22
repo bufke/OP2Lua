@@ -27,6 +27,13 @@ class LuaHost {
   // and returns false - it never lets the error escape into the game's C/C++ code.
   bool RunFile(const std::string& path);
 
+  // Compiles a Lua file (text only) and pushes it, registered as chunk `name` for saved games (Persist.h); false with
+  // `err`, nothing pushed, when it can't be read or compiled. A saved game's script is compiled again this way, not run.
+  bool LoadChunk(const std::string& path, const std::string& name, std::string& err);
+  // LoadChunk, then runs it: its results, `ok` false with `err` when it failed.
+  sol::protected_function_result RunChunk(const std::string& path, const std::string& name, bool& ok,
+                                          std::string& err);
+
  private:
   sol::state lua_;
   bool initialized_ = false;

@@ -74,7 +74,7 @@ equivalents, so the obvious code is automatically correct:
 An author writes `game.rand(...)` because it's the only random there is - and gets multiplayer
 determinism for free.
 
-## Two DLLs, no hooks
+## Two DLLs, and three small hooks for saved games
 
 OP2 builds its mission menu by **statically reading every mission file's exported `DescBlock` /
 `LevelDesc`** from the PE export table - no mission code runs at scan time. So *each mission must
@@ -100,9 +100,18 @@ just *be* ordinary mission DLLs. The result is split in two:
   `FileDescription` in its version resource (so Windows Properties show the mission's name under
   `OP2Lua Mission` / `Outpost Universe`). The code is identical for every mission.
 
-What this buys us versus the hook approach: **no op2ext module, no MissionManager hooks, no
-hardcoded call-site offsets, no `Patcher`, no `capstone.dll` runtime dependency.** OP2 discovers
-the stub like any other mission DLL.
+What this buys us versus the hook approach: **no op2ext module, no `Patcher`, no `capstone.dll` runtime
+dependency.** OP2 discovers the stub like any other mission DLL.
+
+The one place the core patches the game is saved games (0.8.8, `SaveGame.cpp`). OPU 1.4.1 tells a mission DLL
+neither that the game is being saved nor that a saved game was loaded, and the game takes the size of a DLL's save
+region once, when it loads the DLL. So the core replaces three call sites inside the game's own mission-block code
+(Outpost2.exe 1.2.0.7 only, each checked byte for byte before it is patched; with another exe it patches nothing):
+the save writes the script's state into the region just before the game writes it, the load accepts the region's
+saved size, and once the game has read the region and loaded its triggers and groups the state is put back.
+`Persist.cpp` turns the Lua state into those bytes: the values reachable from the globals and the triggers'
+functions, each function named by its prototype's place in its script (a save holds no code, so it resumes only with
+the same script), and the libraries' and bindings' values by their path.
 
 ### Per-mission lifecycle
 
@@ -110,12 +119,16 @@ the stub like any other mission DLL.
 OP2 scans maps\* → reads each stub's static DescBlock (name + numPlayers, patched by the converter)
                  → builds the menu
 player picks a mission → OP2 LoadLibrary's the stub
+  stub GetSaveRegions → the core lets go of the previous mission and gives the game a save region
   stub InitProc → OP2LuaCore_LoadMission(<own folder>, <own DLL base name>)
      → core pins itself (so freeing the stub later can't unload it mid-game)
-     → fresh lua_State; load <base>.placement.lua then <base>.lua  (falls back to placement.lua /
-       mission.lua); resolve on_* callbacks
+     → fresh lua_State; load <base>.placement.lua then run <base>.lua  (falls back to placement.lua /
+       mission.lua); resolve on_* callbacks; on_load; apply the placement; on_init
   stub AIProc / On* → forwarded to OP2LuaCore_* → the Lua callbacks (each in a protected call)
-mission unloads → OP2LuaCore_OnUnloadMission → tear down the lua_State (core stays pinned)
+the game saves → the core's hook writes the script's state into the save region
+player loads a save → OP2 LoadLibrary's the stub, GetSaveRegions, reads the region and the triggers
+     → the core's hook: fresh lua_State, the script compiled (not run), its state put back;
+       on_load_save on the first tick (InitProc isn't called on a load)
 ```
 
 Two robustness details worth noting: the core **pins itself** at first load (OP2 frees the stub

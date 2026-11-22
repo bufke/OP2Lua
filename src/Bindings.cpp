@@ -36,6 +36,7 @@
 #include "Names.h"
 #include "Mission.h"
 #include "OP2LuaCore.h"   // OP2LUA_VERSION
+#include "Persist.h"
 
 // Tethys headers use unqualified min()/max() (they expect the <windows.h> macros). We build with
 // NOMINMAX (sol2/STL require it), so pull std::min/std::max into the global namespace instead.
@@ -56,6 +57,7 @@ using std::min;
 #include "Tethys/Game/MapObjectType.h"  // Tethys::MapObjectType (building footprint for site finding)
 #include "Tethys/Game/Research.h"       // Tethys::Research (validate tech ids before use - see ReportBadTech)
 #include "Tethys/Game/TubeConnection.h"  // TubeConnection (a building's DIRT damage prevention)
+#include "Tethys/Game/ScBase.h"         // ScBase (a loaded condition's objective text)
 #include "Tethys/Resource/SoundID.h"  // SoundID
 
 namespace OP2Lua {
@@ -100,6 +102,19 @@ constexpr int kGaiaPlayer     = 6;               // the "native"/Gaia player tha
 enum class OrderKind { Move, AttackUnit, AttackGround };
 struct DeferredOrder { Unit unit; OrderKind kind; int x; int y; Unit target; int attempts = 0; };
 std::vector<DeferredOrder> gOrders;
+
+// The objective texts of the mission's victory and failure conditions, by the condition's stub id. The game keeps a
+// condition's text as a pointer (+0x30, VictoryCondition/FailureCondition init 0x495870/0x495AC0), not a copy, and a
+// saved game keeps the pointer: a load re-points each one at its text (RestoreBindingsState). The texts live as long as
+// the process.
+std::deque<std::string> gTexts;
+std::map<int, std::string> gObjectives;
+
+const std::string& KeepText(const std::string& text) { return gTexts.emplace_back(text); }
+Tethys::TethysAPI::Trigger NoteObjective(Tethys::TethysAPI::Trigger t, const std::string& text) {
+  if (t.IsValid()) gObjectives[t.GetID()] = text;
+  return t;
+}
 
 // Resolve a sound argument: a name ("Savant4"), a raw integer SoundID, or nil -> default.
 Tethys::SoundID ResolveSound(const sol::object& s, Tethys::SoundID dflt) {
@@ -289,7 +304,7 @@ void Game_Sound(sol::object sound, sol::optional<int> toPlayer) {
 int Game_Rand(int n) { return (n >= 0) ? Game::GetRand(n) : 0; }
 int Game_Tick()      { return Game::Tick(); }
 
-// game.version() -> "0.8.7", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
+// game.version() -> "0.8.8", "2026-11-17 11:57:19": the running OP2LuaCore's version and when its DLL was built.
 std::tuple<std::string, std::string> Game_Version() { return { OP2LUA_VERSION, ::OP2Lua::Mission::BuildTime() }; }
 
 // game.op2_version() -> the version the running Outpost 2 goes by (TApp::Version: "1.4.0.1" under OPU 1.4.x), and
@@ -423,12 +438,13 @@ Unit Game_CreateBeacon(sol::table opts) {
 void Mission_Win(sol::variadic_args) {
   using namespace Tethys::TethysAPI;
   LOG_MISSION(INFO) << "mission.win()";
-  CreateVictoryCondition(CreateTimeTrigger(1, "OP2LuaTrigger", true, true), "Mission accomplished", true, true);
+  const std::string& text = KeepText("Mission accomplished");
+  NoteObjective(CreateVictoryCondition(CreateTimeTrigger(1, "OP2LuaTrigger", true, true), text, true, true), text);
 }
 void Mission_Lose(sol::variadic_args) {
   using namespace Tethys::TethysAPI;
   LOG_MISSION(INFO) << "mission.lose()";
-  CreateFailureCondition(CreateTimeTrigger(1, "OP2LuaTrigger", true, true), true);
+  NoteObjective(CreateFailureCondition(CreateTimeTrigger(1, "OP2LuaTrigger", true, true), true), "");
 }
 // mission.last_one_standing([text]) - the multiplayer Last One Standing victory, as the stock ml*.dll
 // missions set it up: the game's own one-player-left trigger wrapped in a victory condition. The game
@@ -438,10 +454,10 @@ void Mission_LastOneStanding(sol::optional<std::string> text) {
   using namespace Tethys::TethysAPI;
   // The game keeps the text's pointer, not a copy (it shows it in Mission Objectives for the whole game),
   // so the text must outlive this call: kept here for the process's life (a few bytes per mission).
-  static std::deque<std::string> kept;
-  const std::string& objective = kept.emplace_back(text.value_or("Eliminate your opponents."));
+  const std::string& objective = KeepText(text.value_or("Eliminate your opponents."));
   LOG_MISSION(INFO) << "mission.last_one_standing(\"" << objective << "\")";
-  CreateVictoryCondition(CreateLastOneStandingTrigger("OP2LuaTrigger", true, true), objective, true, true);
+  NoteObjective(CreateVictoryCondition(CreateLastOneStandingTrigger("OP2LuaTrigger", true, true), objective, true, true),
+                objective);
 }
 
 // ---- triggers (trigger.* / mission.victory / mission.failure) -----------------------------
@@ -454,7 +470,7 @@ void Mission_LastOneStanding(sol::optional<std::string> text) {
 //
 // A trigger with `on` names the stub's OnTrigger export, which OPU (1.4.0+) calls with the trigger that fired:
 // FireTrigger looks its function up here by trigger id. Without `on` it names the stub's no-op OP2LuaTrigger.
-// The functions live in this Lua state only, so a saved game would lose them (multiplayer games aren't saved).
+// A saved game keeps the functions with the rest of the script (SaveGame.cpp: PushTriggerFunctions / SetTriggerFunctions).
 using Tethys::TethysAPI::CompareMode;
 using Tethys::TethysAPI::Trigger;
 using Tethys::TethysAPI::TriggerResource;
@@ -670,18 +686,17 @@ Trigger Trigger_BuildingCount(sol::table o) {
 // `trigger` fires for them (all of a game's victory conditions, for one player). `text` is the objective in the
 // game's Mission Objectives list; the game keeps its pointer, so it is kept here for the process's life.
 Trigger Mission_Victory(Trigger condition, const std::string& text, sol::optional<sol::table> opts) {
-  static std::deque<std::string> kept;
-  const std::string& objective = kept.emplace_back(text);
+  const std::string& objective = KeepText(text);
   const bool once = opts ? opts->get_or("one_shot", false) : false;
   const bool on = opts ? opts->get_or("enabled", true) : true;
   LOG_MISSION(INFO) << "mission.victory(trigger " << condition.GetID() << ", \"" << objective << "\")";
-  return Tethys::TethysAPI::CreateVictoryCondition(condition, objective, once, on);
+  return NoteObjective(Tethys::TethysAPI::CreateVictoryCondition(condition, objective, once, on), objective);
 }
 // mission.failure(trigger[, {enabled=true}]) - a failure condition: a player loses once `trigger` fires for them.
 Trigger Mission_Failure(Trigger condition, sol::optional<sol::table> opts) {
   const bool on = opts ? opts->get_or("enabled", true) : true;
   LOG_MISSION(INFO) << "mission.failure(trigger " << condition.GetID() << ")";
-  return Tethys::TethysAPI::CreateFailureCondition(condition, on);
+  return NoteObjective(Tethys::TethysAPI::CreateFailureCondition(condition, on), "");
 }
 
 bool Player_OwnsAny(int num, const std::string& typeName) {
@@ -1315,10 +1330,20 @@ MapID WeaponOpt(MapID carrier, const sol::object& o) {
 // ai.unit_block{ { type=, at=, direction=|rotation=, weapon=, cargo=, amount=, classification= }, ... } - `at` in
 // author coords; `rotation` is the game's heading (0-255, East 0, South 64), `direction` a name as create_unit takes.
 // Unknown types are skipped with a warning.
-LuaUnitBlock Ai_UnitBlock(sol::table list) {
+// A block of `recs` (the end record is added here), kept with its records for the process's life.
+std::map<const UnitBlock*, const std::vector<UnitRecord>*> gBlockRecords;
+LuaUnitBlock MakeUnitBlock(std::vector<UnitRecord> recs) {
   static std::deque<std::vector<UnitRecord>> tables;
   static std::deque<UnitBlock>               blocks;
-  std::vector<UnitRecord>& recs = tables.emplace_back();
+  std::vector<UnitRecord>& kept = tables.emplace_back(std::move(recs));
+  kept.emplace_back();   // the table ends with a record of no type
+  UnitBlock* b = &blocks.emplace_back(kept.data());
+  gBlockRecords[b] = &kept;
+  return LuaUnitBlock{ b };
+}
+
+LuaUnitBlock Ai_UnitBlock(sol::table list) {
+  std::vector<UnitRecord> recs;
   for (size_t i = 1; i <= list.size(); ++i) {
     sol::optional<sol::table> r = list[i];
     if (!r) continue;
@@ -1338,8 +1363,7 @@ LuaUnitBlock Ai_UnitBlock(sol::table list) {
                       static_cast<Tethys::UnitClassification>(classification), static_cast<uint16_t>(cargoType),
                       static_cast<uint16_t>(r->get_or("amount", 0)));
   }
-  recs.emplace_back();   // the table ends with a record of no type
-  return LuaUnitBlock{ &blocks.emplace_back(recs.data()) };
+  return MakeUnitBlock(std::move(recs));
 }
 
 LuaGroup Ai_Create(const sol::object& player, GroupKind kind) {
@@ -1533,6 +1557,145 @@ void RegisterGroupBindings(sol::state& lua) {
 // When on, AI debug (log.ai) is also echoed to the in-game comms panel so a dev can watch the AI
 // without leaving the game. Reset per mission (fresh Lua state) and toggled via log.show_ai_in_game().
 static bool gAIToComms = false;
+
+// ---- saved games (SaveGame.cpp) ----
+// A game handle in a save: its kind, then its fields. Each is a value the game's own save keeps meaning: a unit's or
+// stub's id, a player's number, tiles, a unit block's records.
+enum HandleKind : uint8_t { kUnitHandle = 1, kTriggerHandle, kGroupHandle, kPlayerHandle, kRegionHandle, kBlockHandle };
+
+bool WriteHandle(lua_State* L, int idx, Persist::Writer& w) {
+  if (sol::stack::check<Unit>(L, idx, sol::no_panic)) {
+    w.U8(kUnitHandle);
+    w.I32(sol::stack::get<Unit&>(L, idx).GetID());
+  } else if (sol::stack::check<Trigger>(L, idx, sol::no_panic)) {
+    w.U8(kTriggerHandle);
+    w.I32(sol::stack::get<Trigger&>(L, idx).GetID());
+  } else if (sol::stack::check<LuaGroup>(L, idx, sol::no_panic)) {
+    const LuaGroup& g = sol::stack::get<LuaGroup&>(L, idx);
+    w.U8(kGroupHandle);
+    w.I32(g.id);
+    w.U8(static_cast<uint8_t>(g.kind));
+  } else if (sol::stack::check<LuaPlayer>(L, idx, sol::no_panic)) {
+    w.U8(kPlayerHandle);
+    w.I32(sol::stack::get<LuaPlayer&>(L, idx).num);
+  } else if (sol::stack::check<Region>(L, idx, sol::no_panic)) {
+    const Region& r = sol::stack::get<Region&>(L, idx);
+    w.U8(kRegionHandle);
+    w.I32(r.x1); w.I32(r.y1); w.I32(r.x2); w.I32(r.y2);
+  } else if (sol::stack::check<LuaUnitBlock>(L, idx, sol::no_panic)) {
+    const LuaUnitBlock& b = sol::stack::get<LuaUnitBlock&>(L, idx);
+    const auto it = gBlockRecords.find(b.block);
+    if (it == gBlockRecords.end()) return false;
+    const std::vector<UnitRecord>& recs = *it->second;
+    w.U8(kBlockHandle);
+    w.U32(static_cast<uint32_t>(recs.size() - 1));   // without the end record
+    w.U32(static_cast<uint32_t>(sizeof(UnitRecord)));
+    w.Bytes(recs.data(), (recs.size() - 1) * sizeof(UnitRecord));
+  } else {
+    return false;
+  }
+  return true;
+}
+
+bool PushHandle(lua_State* L, uint8_t kind, Persist::Reader& r) {
+  switch (kind) {
+    case kUnitHandle: { const int id = r.I32(); if (!r.Ok()) return false; sol::stack::push(L, Unit(id)); return true; }
+    case kTriggerHandle: { const int id = r.I32(); if (!r.Ok()) return false; sol::stack::push(L, Trigger(id)); return true; }
+    case kGroupHandle: {
+      LuaGroup g;
+      g.id = r.I32();
+      g.kind = static_cast<GroupKind>(r.U8());
+      if (!r.Ok() || static_cast<int>(g.kind) > static_cast<int>(GroupKind::Mining)) return false;
+      sol::stack::push(L, g);
+      return true;
+    }
+    case kPlayerHandle: { LuaPlayer p; p.num = r.I32(); if (!r.Ok()) return false; sol::stack::push(L, p); return true; }
+    case kRegionHandle: {
+      Region g;
+      g.x1 = r.I32(); g.y1 = r.I32(); g.x2 = r.I32(); g.y2 = r.I32();
+      if (!r.Ok()) return false;
+      sol::stack::push(L, g);
+      return true;
+    }
+    case kBlockHandle: {
+      const uint32_t n = r.U32(), size = r.U32();
+      if (!r.Ok() || size != sizeof(UnitRecord) || n > 4096) return false;
+      std::vector<UnitRecord> recs(n);
+      if (!r.Bytes(recs.data(), n * sizeof(UnitRecord))) return false;
+      sol::stack::push(L, MakeUnitBlock(std::move(recs)));
+      return true;
+    }
+    default: return false;
+  }
+}
+
+void SaveBindingsState(Persist::Writer& w) {
+  w.U8(gAIToComms ? 1 : 0);
+  w.U32(static_cast<uint32_t>(gObjectives.size()));
+  for (const auto& [id, text] : gObjectives) { w.I32(id); w.Str(text); }
+  w.U32(static_cast<uint32_t>(gOrders.size()));
+  for (const DeferredOrder& o : gOrders) {
+    w.I32(o.unit.GetID());
+    w.U8(static_cast<uint8_t>(o.kind));
+    w.I32(o.x);
+    w.I32(o.y);
+    w.I32(o.target.GetID());
+    w.I32(o.attempts);
+  }
+}
+
+bool RestoreBindingsState(Persist::Reader& r, std::string& err) {
+  gAIToComms = r.U8() != 0;
+  gObjectives.clear();
+  const uint32_t texts = r.U32();
+  for (uint32_t i = 0; r.Ok() && i < texts; ++i) {
+    const int id = r.I32();
+    const std::string text = r.Str();
+    if (!r.Ok()) break;
+    gObjectives[id] = text;
+    // The loaded condition still points where its text was in the game that saved: point it at the text again.
+    Tethys::ScBase* stub = Tethys::ScBase::GetInstance(id);
+    if (stub == nullptr) {
+      LOG_MISSION(WARNING) << "saved game: condition " << id << " (\"" << text << "\") isn't in the loaded game";
+      continue;
+    }
+    *reinterpret_cast<const char**>(reinterpret_cast<char*>(stub) + 0x30) = KeepText(text).c_str();
+  }
+  gOrders.clear();
+  const uint32_t orders = r.U32();
+  for (uint32_t i = 0; r.Ok() && i < orders; ++i) {
+    DeferredOrder o{ Unit(r.I32()), OrderKind::Move, 0, 0, Unit() };
+    o.kind = static_cast<OrderKind>(r.U8());
+    o.x = r.I32();
+    o.y = r.I32();
+    o.target = Unit(r.I32());
+    o.attempts = r.I32();
+    if (r.Ok()) gOrders.push_back(o);
+  }
+  if (!r.Ok()) { err = "the bindings' part of the save is broken"; return false; }
+  return true;
+}
+
+void ResetObjectives() { gObjectives.clear(); }
+
+void PushTriggerFunctions(lua_State* L) {
+  lua_createtable(L, 0, static_cast<int>(gTriggerFns.size()));
+  for (const auto& [id, fn] : gTriggerFns) {
+    fn.push(L);
+    lua_rawseti(L, -2, id);
+  }
+}
+
+void SetTriggerFunctions(lua_State* L, int idx) {
+  gTriggerFns.clear();
+  idx = lua_absindex(L, idx);
+  lua_pushnil(L);
+  while (lua_next(L, idx) != 0) {
+    if (lua_isinteger(L, -2) && lua_isfunction(L, -1))
+      gTriggerFns[static_cast<int>(lua_tointeger(L, -2))] = sol::protected_function(L, -1);
+    lua_pop(L, 1);
+  }
+}
 
 // Supplied to the logger so every line carries the game mark (100 ticks). Reads ~0 before a game is
 // running. Fully qualified so it compiles regardless of which `using`s are in scope here.

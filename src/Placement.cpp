@@ -398,13 +398,12 @@ bool Load(const std::string& placementPath) {
     return false;
   }
 
-  sol::state& L = LuaHost::Get().lua();
   Budget::Call budget;
-  sol::protected_function_result r =
-      L.safe_script_file(placementPath, &sol::script_pass_on_error);
-  if (!r.valid()) {
-    sol::error e = r;
-    const std::string msg = std::string("Error in placement.lua:\n") + e.what();
+  bool ok = false;
+  std::string err;
+  sol::protected_function_result r = LuaHost::Get().RunChunk(placementPath, "placement", ok, err);
+  if (!ok) {
+    const std::string msg = std::string("Error in placement.lua:\n") + err;
     LOG(ERROR) << msg;
     MessageBoxA(nullptr, msg.c_str(), "OP2Lua", MB_ICONEXCLAMATION | MB_SYSTEMMODAL);
     return false;

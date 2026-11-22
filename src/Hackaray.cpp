@@ -38,6 +38,7 @@ struct State {
   SetMissionEndHook2Fn setMissionEndHook2 = nullptr;
   bool nukeOn = false;
   bool videosOn = false;
+  std::string winAvi, loseAvi;   // the end videos set (kept for a saved game)
 };
 State s;
 
@@ -103,9 +104,43 @@ void Register(sol::state& lua) {
     const bool on = win.has_value() && lose.has_value();
     s.setMissionEndHook2(on, on ? win->c_str() : nullptr, on ? lose->c_str() : nullptr);
     s.videosOn = on;
+    s.winAvi = on ? *win : std::string();
+    s.loseAvi = on ? *lose : std::string();
     LOG_MISSION(INFO) << "hackaray: end videos " << (on ? *win + ", " + *lose : std::string("off"));
     return true;
   });
+}
+
+void SaveState(Persist::Writer& w) {
+  w.U8((s.asked ? 1 : 0) | (s.nukeOn ? 2 : 0) | (s.videosOn ? 4 : 0));
+  w.Str(s.winAvi);
+  w.Str(s.loseAvi);
+}
+
+void RestoreState(Persist::Reader& r) {
+  const uint8_t flags = r.U8();
+  const std::string win = r.Str(), lose = r.Str();
+  if (!r.Ok() || (flags & 1) == 0) return;
+  // The patches are in the game's memory, which a saved game doesn't hold: the library is loaded and they are set
+  // again, as the mission had them.
+  s.asked = true;
+  s.dll = LoadLibraryA("Hackaray.dll");
+  if (s.dll) {
+    s.setNukePatch = reinterpret_cast<SetNukePatchFn>(GetProcAddress(s.dll, "SetNukePatch"));
+    s.setMissionEndHook2 = reinterpret_cast<SetMissionEndHook2Fn>(GetProcAddress(s.dll, "SetMissionEndHook2"));
+  }
+  if (!Loaded()) {
+    LOG_MISSION(WARNING) << "hackaray: the saved game used Hackaray.dll, which isn't there now";
+    return;
+  }
+  if ((flags & 2) != 0) s.nukeOn = s.setNukePatch(true);
+  if ((flags & 4) != 0) {
+    s.winAvi = win;
+    s.loseAvi = lose;
+    s.setMissionEndHook2(true, s.winAvi.c_str(), s.loseAvi.c_str());
+    s.videosOn = true;
+  }
+  LOG_MISSION(INFO) << "hackaray: set again from the saved game";
 }
 
 void Reset() {

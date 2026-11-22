@@ -7,6 +7,8 @@
 
 #include "LuaHost.h"
 
+#include <fstream>
+#include <iterator>
 #include <string>
 
 #define WIN32_LEAN_AND_MEAN
@@ -15,6 +17,7 @@
 #include "Guard.h"
 #include "Log.h"
 #include "Mission.h"
+#include "Persist.h"
 
 namespace OP2Lua {
 
@@ -154,6 +157,9 @@ void LuaHost::Init() {
   lua_register(lua_.lua_state(), "__op2lua_run", &RunScheduled);
 
   RegisterBindings(lua_);
+  // What the state starts with, for saved games: the libraries' and bindings' values, before any Lua runs.
+  Persist::Reset();
+  Persist::SnapshotPermanents(lua_.lua_state());
 
   // Runtime preamble: the tick-based scheduler (after/every/when), the time helpers
   // (game.minutes/seconds), and the pump that AIProc drives. Tick-based => multiplayer-safe.
@@ -264,10 +270,16 @@ function __op2lua_pump()
   _addTimers, _addWhens, _pumping = {}, {}, false
 end
 )LUA";
-  sol::protected_function_result r = lua_.safe_script(kPreamble, &sol::script_pass_on_error);
-  if (!r.valid()) {
-    sol::error e = r;
-    LOG(ERROR) << "Failed to load OP2Lua runtime preamble: " << e.what();
+  lua_State* L = lua_.lua_state();
+  if (luaL_loadbufferx(L, kPreamble, std::char_traits<char>::length(kPreamble), "=OP2Lua runtime", "t") != LUA_OK) {
+    LOG(ERROR) << "Failed to load OP2Lua runtime preamble: " << lua_tostring(L, -1);
+    lua_pop(L, 1);
+  } else {
+    Persist::AddChunk(L, "OP2Lua runtime", kPreamble);
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+      LOG(ERROR) << "Failed to load OP2Lua runtime preamble: " << lua_tostring(L, -1);
+      lua_pop(L, 1);
+    }
   }
 
   initialized_ = true;
@@ -282,18 +294,45 @@ void LuaHost::Shutdown() {
   LOG(INFO) << "Lua host shut down";
 }
 
+bool LuaHost::LoadChunk(const std::string& path, const std::string& name, std::string& err) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) { err = "cannot open " + path; return false; }
+  const std::string source((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  lua_State* L = lua_.lua_state();
+  const std::string chunkName = "@" + path;   // as Lua names a file it loads itself
+  if (luaL_loadbufferx(L, source.data(), source.size(), chunkName.c_str(), "t") != LUA_OK) {
+    err = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    return false;
+  }
+  Persist::AddChunk(L, name, source);
+  return true;
+}
+
+sol::protected_function_result LuaHost::RunChunk(const std::string& path, const std::string& name, bool& ok,
+                                                 std::string& err) {
+  ok = false;
+  if (!LoadChunk(path, name, err)) return sol::protected_function_result();
+  sol::protected_function fn(lua_.lua_state(), -1);
+  lua_pop(lua_.lua_state(), 1);
+  sol::protected_function_result r = fn();
+  ok = r.valid();
+  if (!ok) { sol::error e = r; err = e.what(); }
+  return r;
+}
+
 bool LuaHost::RunFile(const std::string& path) {
   Guard::Scope guard;   // the script's top level may call the game too
   Budget::Call budget;
-  sol::protected_function_result result = lua_.safe_script_file(
-      path, &sol::script_pass_on_error);
+  bool ok = false;
+  std::string error;
+  { sol::protected_function_result r = RunChunk(path, "mission script", ok, error); }
 
-  if (!result.valid()) {
-    sol::error err = result;
+  if (!ok) {
     std::string msg = "Error running ";
     msg += path;
     msg += ":\n";
-    msg += err.what();
+    msg += error;
     LOG(ERROR) << msg;
     MessageBoxA(nullptr, msg.c_str(), "OP2Lua", MB_ICONEXCLAMATION | MB_SYSTEMMODAL);
     return false;

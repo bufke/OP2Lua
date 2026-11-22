@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(OP2Lua VERSION 0.8.7 LANGUAGES CXX C)
+project(OP2Lua VERSION 0.8.8 LANGUAGES CXX C)
 # NOTE: keep this VERSION in sync with OP2LUA_VERSION in src/OP2LuaCore.h.
 
 # ---------------------------------------------------------------------------
@@ -66,6 +66,9 @@ add_library(OP2LuaCore SHARED
   src/ErrorHandling.cpp
   src/Guard.cpp
   src/Log.cpp
+  src/Persist.cpp
+  src/persist_lua.c
+  src/SaveGame.cpp
   ${LUA_SOURCES}
   ${OP2LUACORE_RC}                 # Windows version/copyright resource (MSVC only)
 )

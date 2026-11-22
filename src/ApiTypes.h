@@ -8,7 +8,11 @@
 
 #include "Tethys/API/Mission.h"  // Tethys::TethysAPI::OnChatArgs
 
+struct lua_State;
+
 namespace OP2Lua {
+
+namespace Persist { class Writer; class Reader; }
 
 // Wraps OnChatArgs so a mission can read and rewrite the chat text:  function on_chat(chat) ...
 //   chat.text   - get/set (writing back into the game's buffer, length-clamped)
@@ -34,16 +38,25 @@ struct Region {
 };
 
 // Unit orders (move/attack_move/attack) are given at once; one a unit can't take yet is queued and retried.
-// FlushUnitOrders() is called at the start of each scheduler pump; ResetUnitOrders() on load.
+// FlushUnitOrders() is called at the start of each scheduler pump; ResetUnitOrders() when a mission is let go.
 void FlushUnitOrders();
 void ResetUnitOrders();
 // Stops a WAV that game.play_wav started (the mission is unloading).
 void StopMissionWav();
 
 // Triggers made from Lua (trigger.* with an `on=` function) name the stub's OnTrigger export; OPU passes
-// it the trigger that fired, and FireTrigger runs that trigger's Lua function. ResetTriggers() on load
+// it the trigger that fired, and FireTrigger runs that trigger's Lua function. ResetTriggers() when a mission is let go
 // (while the old Lua state is still alive: the functions belong to it).
 void FireTrigger(void* pArgs);
 void ResetTriggers();
+
+// Saved games (SaveGame.cpp): the bindings' own state - the condition texts, the queued unit orders, the AI comms
+// switch - and the triggers' functions as a Lua table (trigger id -> function). RestoreBindingsState runs once the game
+// has loaded its triggers: it points each loaded condition at its text again.
+void SaveBindingsState(Persist::Writer& w);
+bool RestoreBindingsState(Persist::Reader& r, std::string& err);
+void ResetObjectives();
+void PushTriggerFunctions(lua_State* L);
+void SetTriggerFunctions(lua_State* L, int idx);
 
 }  // namespace OP2Lua

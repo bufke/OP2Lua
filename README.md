@@ -22,11 +22,11 @@ no capstone, no op2ext module**.
 
 ## Status
 
-**Working in-game (v0.8.7).** A demo pack runs in real Outpost 2 - **Hold the Line** (defense),
+**Working in-game (v0.8.8).** A demo pack runs in real Outpost 2 - **Hold the Line** (defense),
 **Strike Team** (offense), **The Convoy** (escort), **Hold the Beacon** (control), and **Seek and
 Destroy** (hunt): placement, escalating waves, scripted/reactive enemies, timed reinforcements, cargo
 trucks, synced RNG, combat orders, messages, Savant voices, the multiplayer "Morale Steady" rule, and
-clean win/lose. The 0.6 series adds a deeper surface - terrain/perception queries, base-building &
+clean win/lose. Saved games carry a mission's script on where it was (0.8.8). The 0.6 series adds a deeper surface - terrain/perception queries, base-building &
 economy orders (survey/mine/build/dock/produce/research), disasters, and a scripted-AI sandbox - all
 exercised by two full-API smoke tests (**Feature Test** + **Lua Smoke Test**) that tally pass/fail to
 the log and on-screen. Coordinates match the in-game status bar (type what you see); each mission gets
