@@ -3,8 +3,6 @@
 All notable changes to OP2Lua (the engine: `OP2LuaCore.dll`, the mission stub, the editor and tools).
 For the author-facing SDK, see the OP2LuaSDK changelog.
 
-## [Unreleased]
-
 ## [0.8.7] - 2026-11-22
 
 ### Added
