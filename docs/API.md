@@ -65,6 +65,39 @@ end
 | `on_end(result)` | The game reports the mission's end: `result` is `{ result =, reason =, tick =, mark =, local_player = }` as in the result file (*Logs*). It runs only when the core learns the end while the mission still runs (a tick that sees the end, or the game's `OnEndMission` / unload); a game started by `op2launcher` closes from the end screen without either, so don't rely on it for anything that must happen. Missions that take no argument keep working. |
 | `on_save()` / `on_load_save()` | `on_save`: the game is about to save (change only the script's own variables here, not the game). `on_load_save`: the first tick after a saved game loaded. A saved game keeps the script's variables, timers and triggers' functions without either; they are for settings outside the script ([FILE-FORMAT.md](FILE-FORMAT.md), Saved games). |
 
+### Saved games
+
+A saved game keeps the script: when the player loads it, the script carries on from the tick it was saved at, with
+its variables, tables, `after`/`every`/`when` timers, triggers' `on` functions and the units and groups it holds.
+Nothing runs again (not the top level, `on_load`, the placement or `on_init`); `on_load_save()` runs on the first
+tick after the load. A script needs no code for this. What to know (the full rules in [FILE-FORMAT.md](FILE-FORMAT.md),
+*Saved games*):
+
+- A save resumes only with the same `.lua` file. Changing the script (an update) makes its older saves load with the
+  script stopped, and the player is told.
+- Don't keep a half-finished iterator (`string.gmatch`'s) in a variable: the game then saves without the script.
+- `game.set_tech_cost` and `game.set_music` aren't in a saved game: set them again in `on_load_save()`. Unit stats,
+  required techs, morale locks, daylight and the map are (the game saves them).
+- `campaign.save` writes its file at once; loading an earlier save doesn't take it back.
+- The Mission log has a `saved game:` line for every save and load ([LOGGING.md](LOGGING.md), *Saved games*).
+
+```lua
+local songs = { 5, 6, 7 }
+local function setup_rules()
+  game.set_music(songs)
+  game.set_tech_cost(3401, 1200)
+end
+
+function on_init()
+  setup_rules()
+end
+
+function on_load_save()
+  setup_rules()   -- a load re-reads the tech file, and may not keep the playlist
+  game.message("Game loaded")
+end
+```
+
 A bug in any callback is caught, logged with a file:line, and surfaced - it never crashes the game.
 So is a fault inside a game call the script makes (an access violation in the game's own code): it comes back as a
 Lua error, `game call faulted: access violation at 0x... reading 0x...`, after the script's file and line; the
@@ -182,12 +215,12 @@ passed as a raw integer SoundID. An unknown name plays sound 0.
 | `game.units_in_range(at, range)` | The units within `range` tiles of `at`, as the game's `InRangeEnumerator` finds them. |
 | `game.units_closest(at [, count])` | The units of every player in the order the game's `ClosestEnumerator` gives them: nearest `at` first by the game's own measure (not a plain distance sort), at most `count` of them (default all). For walking the units nearest a spot as a mission DLL does. |
 | `game.units_in_rect(area)` | The units of every player in the area (a rectangle `{x1, y1, x2, y2}`, a point, a `Region`), as the game's `InRectEnumerator` finds them. |
-| `game.set_music(songs [, repeat_from])` | The music playlist: the game's song numbers in order, and the position (1-based) it starts again from once played through (`TethysGame::SetMusicPlayList`). |
+| `game.set_music(songs [, repeat_from])` | The music playlist: the game's song numbers in order, and the position (1-based) it starts again from once played through (`TethysGame::SetMusicPlayList`). Set it again in `on_load_save()` (*Saved games*). |
 | `game.player(n)` | The `Player` of slot `n` (1-7), whether or not the lobby has it: a mission's own computer player beyond the lobby's (the game's player 6, say) is `game.player(7)`. |
 | `game.set_required_tech(type, tech)` | The topic a unit type (a name or raw MapID) needs before anyone can build it, to gate units behind a mission's own topics. |
 | `game.force_robot_command(on)` | Every player's robot units work without a Robot Command Center (the game's `forceEnableRCC` flag), for a mission that takes the RCC away. It changes the rules, so every machine of a multiplayer game must call it alike (from the script). |
 | `game.clear_cheated()` | Clears the game's record of a game-option change, which a mission's forced morale (`game.morale_steady`) sets, so the game isn't marked "CHEATED GAME!". |
-| `game.set_tech_cost(tech, cost)` | A topic's research cost for Eden and Plymouth; `-1` makes it impossible to research. |
+| `game.set_tech_cost(tech, cost)` | A topic's research cost for Eden and Plymouth; `-1` makes it impossible to research. Not kept in a saved game (the game reads the tech file again on a load): set it again in `on_load_save()`. |
 | `game.rand_point(area)` | A tile drawn in the area by the game's own `MAP_RECT::RandPt`, so the game's random numbers go as a stock mission's do. The tile is a positional `{ x, y }`: read it as `p[1]`, `p[2]` (it goes straight to `at =`). |
 | `game.create_emp_missile(target, from, player)` | An EMP missile of `player` flying from `from` to `target` (`TethysGame::SetEMPMissile`). |
 | `game.wreckage()` | The wreckage on the map (the gaia player's), as a stock mission walks it. |
@@ -344,7 +377,8 @@ base the player built, colony values, what a factory held. The data is a file be
 `name` is 1 to 64 letters, digits, `_` and `-`: no paths, dots or spaces, and not a Windows device name (`CON`,
 `NUL`, `COM1` ...). Mission DLLs in the same folder share the files, so give a campaign's saves its own names
 (`"rebels_base"`). The calls touch only the file, so any callback can make them; a whole 512 x 256 map of cells plus
-1,000 units is about 1.4 MB.
+1,000 units is about 1.4 MB. The file isn't part of a saved game: a player who loads an earlier save keeps the file
+as it was last written, so write it when the mission is won rather than as it goes.
 
 ```lua
 function on_init()
@@ -378,7 +412,7 @@ looks for the DLL, even when it is in the game folder.
 | `hackaray.end_videos{ eden = { win, lose }, plymouth = { win, lose } }` | The same, the pair picked by the colony of the player at each machine. Without a pair for that colony (or with one name only), the videos are turned off. |
 
 Calling `nuke_patch` or `end_videos` before `hackaray.load()` is an error. Whatever the mission switched on is
-switched off, and the library freed, when the mission is unloaded.
+switched off, and the library freed, when the mission is unloaded; a saved game switches it on again when it loads.
 
 ```lua
 function on_init()

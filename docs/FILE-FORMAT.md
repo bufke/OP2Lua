@@ -318,9 +318,15 @@ load.
 **What a script must do**: keep its state in Lua variables, as any script does; nothing has to be written in
 `on_save` or read back in `on_load_save`. Those two are for what lives outside the script:
 
-- Game settings that a saved game doesn't hold: the music playlist (`game.set_music`) and changed research costs or
-  tech gates may come back as the game's defaults, so set them again in `on_load_save()`. (The game reads the tech
-  file again when it loads a save. Not measured for every setting.)
+- Game settings a saved game doesn't hold. The game saves most of what a script changes in it, but not all:
+
+  | Kept by the game's save | Not kept: set it again in `on_load_save()` |
+  |---|---|
+  | unit stats (`set_unit_stat`; measured), required techs (`set_required_tech`), the map and its cells, research done, morale locks (`morale_steady`), `force_robot_command`, daylight | research costs (`set_tech_cost`): the game reads the tech file again when it loads a save |
+  | | the music playlist (`set_music`; not measured, so set it to be safe) |
+
+  The left column comes from what the save holds (the unit-type table, the game's own state block, the day/night
+  section); only unit stats were checked in a game.
 - Files: `campaign.save` writes to disk at once, and a load doesn't take it back. A WAV `game.play_wav` was playing
   doesn't play on.
 - `on_save()` runs while the game writes the file: it may change the script's own variables but mustn't change the
@@ -337,6 +343,16 @@ function is fine: nothing of it is left once the function returns.
 (an update of the mission), its older saves load with the script stopped, and the Mission log and the player are
 told why. A change to the placement file doesn't matter. A later OP2Lua loads the save while its own runtime (the
 scheduler) is unchanged; otherwise the same (*Which OP2Lua updates keep saves loading*).
+
+**Releasing an update of a mission**: change a `.lua` only when it needs fixing, since every byte counts (a comment,
+a version string, line endings). Keep things that change with each release out of the script: a version number
+belongs in the placement file, the DLL's description or a message the launcher shows. A tool can tell before loading
+whether a save will carry on (*The state's header*).
+
+**Checking a mission**: save a game, play on a little, load it, and read the Mission log: `saved game: the script
+carries on` and the script's own lines going on from the saved tick mean it worked; anything else says why
+([LOGGING.md](LOGGING.md), *Saved games*). A game that wasn't saved and one that was loaded should log the same lines
+after the save's tick.
 
 **Older saves**: a game saved before OP2Lua 0.8.8 holds no script state. It loads (units, map, triggers as the game
 saved them) with the mission's script stopped, and says so; to play the mission with its script, start it again.
@@ -375,7 +391,7 @@ mission DLL's file name) comes the u32 size of the region, then the region. All 
 |---|---|
 | 8 bytes | `OP2LuaSv` |
 | u32 | format: 1 |
-| string | the OP2Lua version that saved (`0.8.8`) |
+| string | the OP2Lua version that saved (e.g. `0.8.9`) |
 | string | the mission: its DLL's name without `.dll` (letters, digits, `-`, `_`) |
 | u8 | 0: no script was running; 1: the script's state follows; 2: the state couldn't be saved, and a string says why |
 

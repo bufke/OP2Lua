@@ -77,6 +77,8 @@ OP2Lua/
     Bindings.cpp              - the author-facing API, bound to Tethys via sol2
     Hackaray.cpp              - the opt-in hackaray.* functions (Hackaray.dll's nuke patch and end videos)
     Campaign.cpp              - campaign.* (data a campaign mission saves for the next, in a .carry file)
+    SaveGame.cpp              - saved games: the three hooks that put the script's state in the save
+    Persist.cpp, persist_lua.c - the Lua state as bytes for a saved game, and back
     Names.cpp                 - name <-> MapID / SoundID tables
     ErrorHandling.cpp         - crash reporter / native stack traces
     Guard.cpp                 - a fault inside a game call a script makes becomes a Lua error
