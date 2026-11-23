@@ -68,7 +68,8 @@ bool Save(lua_State* L, int idx, Writer& w, std::string& err);
 // another version of a chunk it needs.
 bool Restore(lua_State* L, Reader& r, std::string& err);
 
-// FNV-1a, 64 bits.
+// FNV-1a, 64 bits, but from the starting value 1469598103934665603, not FNV's usual 14695981039346656037. Saves hold
+// these hashes and tools read them (FILE-FORMAT.md, The state's header), so it stays as it is.
 uint64_t Hash(std::string_view s);
 
 }  // namespace OP2Lua::Persist

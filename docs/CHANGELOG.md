@@ -3,6 +3,16 @@
 All notable changes to OP2Lua (the engine: `OP2LuaCore.dll`, the mission stub, the editor and tools).
 For the author-facing SDK, see the OP2LuaSDK changelog.
 
+## [0.8.9] - 2026-11-23
+
+### Changed
+
+- The in-game messages about saved games are short enough for the message pane (it cut them off after about 90
+  characters), e.g. "OP2Lua: saved with another version of this mission: its script is stopped." The Mission log
+  keeps the whole reason. Saves made with 0.8.8 load and carry on.
+- FILE-FORMAT.md, "Saved games": which OP2Lua updates keep saves loading, and the saved state's header as something
+  tools may read (to tell before loading whether a save will carry on with the installed mission).
+
 ## [0.8.8] - 2026-11-22
 
 ### Added

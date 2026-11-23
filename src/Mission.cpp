@@ -417,7 +417,8 @@ bool Protected(F& body, std::string& err) {
   return ctx.ok;
 }
 
-// Shows a message on the first tick after a load, when the game is running again.
+// Shows a message on the first tick after a load, when the game is running again. The game's message pane cuts a
+// message off after about 90 characters, so these are short; the Mission log has the whole reason.
 void NoticeAfterLoad(const std::string& text) { gLoadNotice = text; }
 }  // namespace
 
@@ -453,8 +454,8 @@ bool BuildSave(std::vector<char>& out, std::string& err) {
       // says why the script can't carry on.
       LOG_MISSION(ERROR) << "saved game: the script's state can't be saved: " << err
                          << ". The game is saved without it; loading it stops the mission's script.";
-      Game::AddMessage("OP2Lua: the mission script's state couldn't be saved; this save won't carry the script on. "
-                       "See the OP2Lua log.", static_cast<Tethys::SoundID>(0));
+      Game::AddMessage("OP2Lua: the script couldn't be saved: a load stops it. See the OP2Lua log.",
+                       static_cast<Tethys::SoundID>(0));
       w = Persist::Writer();
       WriteHeader(w, kScriptNotKept);
       kept = false;
@@ -483,7 +484,11 @@ void RestoreSave(const char* data, size_t size) {
   const auto fail = [&](const std::string& why) {
     LOG_MISSION(ERROR) << "saved game: the script's state couldn't be put back: " << why
                        << ". The mission's script doesn't run in this game.";
-    NoticeAfterLoad("OP2Lua: this saved game's mission script couldn't carry on (" + why + "). See the OP2Lua log.");
+    NoticeAfterLoad(why.find("version of the mission script") != std::string::npos
+                        ? "OP2Lua: saved with another version of this mission: its script is stopped."
+                    : why.find("version of the OP2Lua runtime") != std::string::npos
+                        ? "OP2Lua: saved with another OP2Lua version: the mission's script is stopped."
+                        : "OP2Lua: this save's mission script couldn't carry on. See the OP2Lua log.");
     Reset();
   };
   if (!r.Ok() || std::memcmp(magic, kSaveMagic, sizeof magic) != 0) { fail("its data isn't OP2Lua's"); return; }
@@ -523,8 +528,7 @@ void LoadedWithoutState() {
   Reset();
   LOG_MISSION(WARNING) << "saved game: saved before OP2Lua kept a mission's script state in the save (0.8.8); the "
                           "mission's script doesn't run in this game";
-  NoticeAfterLoad("OP2Lua: this game was saved by an older OP2Lua, without the mission script's state. The script "
-                  "doesn't run; start the mission again to play it with its script.");
+  NoticeAfterLoad("OP2Lua: saved before OP2Lua 0.8.8: the mission's script is stopped.");
 }
 
 namespace {
