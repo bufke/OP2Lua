@@ -649,12 +649,19 @@ Trigger Trigger_Escape(sol::table o) {
                                                  o.get_or("cargo", -1), o.get_or("amount", -1), TriggerFnName(o)),
                   o, "escape");
 }
-// trigger.kit{ type=, count=1, player= } - ConVecs carrying at least `count` kits of a structure (Eden 1's six kits).
+// trigger.kit{ type=, count=1, player= } - a player's ConVecs carrying at least `count` kits of a structure
+// (Eden 1's six kits). `player` is needed.
 Trigger Trigger_Kit(sol::table o) {
   if (BadTriggerPlayer(o, "kit")) return Trigger();
+  // For all players the game faults at its next check of the trigger (PlayerUnitEnum::GetNext, 0x47A5EE).
+  const int player = PlayerOpt(o);
+  if (player == static_cast<int>(Tethys::AllPlayers)) {
+    LOG_MISSION(WARNING) << "trigger.kit: needs a player";
+    return Trigger();
+  }
   const MapID type = MapIdFromName(o.get_or("type", std::string()));
   using Fn = Trigger FASTCALL(Tethys::ibool, Tethys::ibool, int, MapID, int, const char*);
-  return Remember(Tethys::OP2Thunk<0x4791C0, Fn>(Enabled(o), OneShot(o, false), PlayerOpt(o), type, o.get_or("count", 1),
+  return Remember(Tethys::OP2Thunk<0x4791C0, Fn>(Enabled(o), OneShot(o, false), player, type, o.get_or("count", 1),
                                                  TriggerFnName(o)),
                   o, "kit");
 }
